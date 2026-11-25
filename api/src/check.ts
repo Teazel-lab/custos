@@ -2,25 +2,28 @@ import { isAddress, MAX_UINT } from './abi'
 import { decodeCalldata, type DecodedCall } from './calldata'
 import { explain } from './explain'
 import { HttpError } from './http'
-import { providerReason } from './messages'
+import { providerReason, UNSUPPORTED_TESTNET } from './messages'
 import { REGISTRIES, registrySignal } from './registry'
 import { checkAddresses, checkTokens } from './reputation'
-import { simulate, type SimulationResult } from './simulate'
+import { callModeReasons, simulate, type SimulationResult } from './simulate'
 import type { AppEnv, CheckResponse, Reason, Tx, Verdict } from './types'
 
 const TOKEN_CAP = 5
 const ADDRESS_CAP = 8
+const DEADLINE_MS = 10_000
 const ZERO = '0x' + '0'.repeat(40)
+const ALLOWED_FIELDS = new Set(['chainId', 'from', 'to', 'data', 'value'])
 
-export async function runCheck(env: AppEnv, tx: Tx): Promise<CheckResponse> {
+export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promise<CheckResponse> {
+  const deadline = parent ?? AbortSignal.timeout(DEADLINE_MS)
   const decoded = decodeCalldata(tx)
   const tokens = unique(decoded.tokens).slice(0, TOKEN_CAP)
   const addresses = unique([tx.to, ...decoded.spenders]).slice(0, ADDRESS_CAP)
   const [sim, registryReasons, addressReasons, tokenReasons] = await Promise.all([
-    settleSimulation(env, tx, decoded),
-    settle('Registry', () => registrySignal(env, tx.chainId, addresses)),
-    settle('Address reputation', () => checkAddresses(env, tx.chainId, addresses)),
-    settle('Token reputation', () => checkTokens(env, tx.chainId, tokens)),
+    settleSimulation(env, tx, decoded, deadline),
+    settle('Registry', () => registrySignal(env, tx.chainId, addresses, deadline)),
+    settle('Address reputation', () => checkAddresses(env, tx.chainId, addresses, deadline)),
+    settle('Token reputation', () => checkTokens(env, tx.chainId, tokens, deadline)),
   ])
 
   const moreTokens = unique(sim.tokens)
@@ -30,10 +33,12 @@ export async function runCheck(env: AppEnv, tx: Tx): Promise<CheckResponse> {
     .filter((address) => !addresses.includes(address))
     .slice(0, Math.max(0, ADDRESS_CAP - addresses.length))
   const [extraTokens, extraAddresses, extraRegistry] = await Promise.all([
-    moreTokens.length ? settle('Token reputation', () => checkTokens(env, tx.chainId, moreTokens)) : [],
-    moreAddresses.length ? settle('Address reputation', () => checkAddresses(env, tx.chainId, moreAddresses)) : [],
+    moreTokens.length ? settle('Token reputation', () => checkTokens(env, tx.chainId, moreTokens, deadline)) : [],
+    moreAddresses.length
+      ? settle('Address reputation', () => checkAddresses(env, tx.chainId, moreAddresses, deadline))
+      : [],
     moreAddresses.length && REGISTRIES[tx.chainId]
-      ? settle('Registry', () => registrySignal(env, tx.chainId, moreAddresses))
+      ? settle('Registry', () => registrySignal(env, tx.chainId, moreAddresses, deadline))
       : [],
   ])
 
@@ -46,6 +51,7 @@ export async function runCheck(env: AppEnv, tx: Tx): Promise<CheckResponse> {
     ...extraTokens,
     ...extraAddresses,
     ...extraRegistry,
+    ...(tx.chainId === 97 ? [unsupportedTestnet()] : []),
   ])
   const judged = judge(reasons)
   return {
@@ -53,14 +59,21 @@ export async function runCheck(env: AppEnv, tx: Tx): Promise<CheckResponse> {
     score: judged.score,
     reasons,
     simulation: sim.simulation,
-    explanation: await explain(env, judged.verdict, reasons),
+    explanation: await explain(env, judged.verdict, reasons, deadline),
     checkedAt: new Date().toISOString(),
   }
+}
+
+function unsupportedTestnet(): Reason {
+  return { code: 'unsupported_on_testnet', severity: 'info', message: UNSUPPORTED_TESTNET }
 }
 
 export function parseTx(body: unknown): Tx {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Body must be a JSON object.')
   const record = body as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (!ALLOWED_FIELDS.has(key)) throw new HttpError(400, `Unknown field ${key}.`)
+  }
   if (record.chainId !== 56 && record.chainId !== 97) throw new HttpError(400, 'chainId must be 56 or 97.')
   const from = addressField(record.from, 'from')
   const to = addressField(record.to, 'to')
@@ -75,9 +88,14 @@ export async function requestHash(tx: Tx): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-async function settleSimulation(env: AppEnv, tx: Tx, decoded: DecodedCall): Promise<SimulationResult> {
+async function settleSimulation(
+  env: AppEnv,
+  tx: Tx,
+  decoded: DecodedCall,
+  signal: AbortSignal,
+): Promise<SimulationResult> {
   try {
-    return await simulate(env, tx, decoded)
+    return await simulate(env, tx, decoded, signal)
   } catch {
     return {
       simulation: {
@@ -87,7 +105,7 @@ async function settleSimulation(env: AppEnv, tx: Tx, decoded: DecodedCall): Prom
         assetChanges: [],
         approvals: decoded.approvals,
       },
-      reasons: [providerReason('Simulation')],
+      reasons: [...callModeReasons(tx), providerReason('Simulation')],
       tokens: [],
       spenders: [],
     }

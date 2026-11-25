@@ -3,13 +3,25 @@ export interface KvStore {
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
 }
 
-/** Bindings the check uses. `KVNamespace` satisfies `CACHE`, so this accepts the generated `Env`. */
+/** Workers Rate Limiting binding. `limit` must not be able to take the check down. */
+export interface RateLimiter {
+  limit(options: { key: string }): Promise<{ success: boolean }>
+}
+
+/** Bindings the check uses. The generated `Env` is assignable to this. */
 export interface AppEnv {
   CACHE: KvStore
+  CHECK_LIMIT: RateLimiter
   LLM_BASE_URL: string
   LLM_MODEL: string
-  RPC_URL?: string
-  TRACE_RPC_URL?: string
+  /** Plain JSON-RPC for chain 56. Empty falls back to the public mainnet endpoint. */
+  RPC_URL_56?: string
+  /** Plain JSON-RPC for chain 97. Empty falls back to the public testnet endpoint. */
+  RPC_URL_97?: string
+  /** debug_traceCall for chain 56. Empty skips the trace tier on mainnet. */
+  TRACE_RPC_URL_56?: string
+  /** debug_traceCall for chain 97. Empty skips the trace tier on testnet. */
+  TRACE_RPC_URL_97?: string
   LLM_API_KEY?: string
 }
 
@@ -63,11 +75,4 @@ export interface Tx {
   to: string
   data: string
   value: bigint
-}
-
-export interface Signal {
-  reasons: Reason[]
-  simulation?: Simulation
-  tokens?: string[]
-  spenders?: string[]
 }

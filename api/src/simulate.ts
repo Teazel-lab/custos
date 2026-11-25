@@ -1,24 +1,31 @@
-import { MAX_UINT, dataWord, decodeRevertData, isAddress, topicAddress } from './abi'
+import { dataWord, decodeRevertData, isAddress, topicAddress } from './abi'
+import { isKnownCalldata, type DecodedCall } from './calldata'
 import {
   APPROVAL,
   APPROVAL_FOR_ALL,
+  NESTED_REVERT,
+  REVERTED,
   TRACE_UNAVAILABLE,
+  UNKNOWN_CALLDATA,
   UNLIMITED,
+  VALUE_UNSIMULATED,
   approvalToEoa,
+  eoaDelegated,
   providerReason,
   valueToContract,
   valueToEoa,
 } from './messages'
-import { codeIsEoa, getCode, plainRpc, probe, rpc, traceRpc, txCall } from './rpc'
+import { codeKind, getCode, plainRpc, probe, rpc, rpcMatchesChain, sanitizeRevert, traceRpc, txCall, type CodeKind } from './rpc'
 import { withTimeout } from './time'
 import type { AppEnv, Approval, AssetChange, Reason, Simulation, Tx } from './types'
-import type { DecodedCall } from './calldata'
 
 const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 const APPROVAL_TOPIC = '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925'
 const APPROVAL_FOR_ALL_TOPIC = '0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31'
 /** Address geth uses for synthetic native-transfer logs when traceTransfers is set. */
 const NATIVE_LOG = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+const NEAR_UNLIMITED = 1n << 128n
+const LOOKUP_CAP = 8
 
 interface TraceLog {
   address?: string
@@ -43,23 +50,62 @@ export interface SimulationResult {
   spenders: string[]
 }
 
-export async function simulate(env: AppEnv, tx: Tx, decoded: DecodedCall): Promise<SimulationResult> {
-  const traceUrl = traceRpc(env)
+export function callModeReasons(tx: Tx): Reason[] {
+  const reasons: Reason[] = [{ code: 'trace_unavailable', severity: 'warn', message: TRACE_UNAVAILABLE }]
+  if (tx.value > 0n) {
+    reasons.push({ code: 'value_unsimulated', severity: 'warn', message: VALUE_UNSIMULATED })
+  }
+  if (!isKnownCalldata(tx.data)) {
+    reasons.push({ code: 'unknown_calldata', severity: 'warn', message: UNKNOWN_CALLDATA })
+  }
+  return reasons
+}
+
+export async function simulate(
+  env: AppEnv,
+  tx: Tx,
+  decoded: DecodedCall,
+  parent?: AbortSignal,
+): Promise<SimulationResult> {
+  const extra: Reason[] = []
+  const traceUrl = traceRpc(env, tx.chainId)
   if (traceUrl) {
-    try {
-      const traced = await withTimeout((signal) => traceSimulation(env, traceUrl, tx, signal), 6_000, 'trace')
-      traced.simulation.approvals = mergeApprovals(traced.simulation.approvals, decoded.approvals)
-      return traced
-    } catch {
-      // eth_simulateV1, then eth_call.
+    const traceOk = await rpcMatchesChain(env, tx.chainId, traceUrl, parent)
+    if (!traceOk) {
+      extra.push(providerReason('Trace RPC'))
+    } else {
+      try {
+        const traced = await withTimeout((signal) => traceSimulation(env, traceUrl, tx, signal), 6_000, 'trace', parent)
+        traced.simulation.approvals = mergeApprovals(traced.simulation.approvals, decoded.approvals)
+        traced.reasons.unshift(...extra)
+        return traced
+      } catch (err) {
+        if (parent?.aborted) throw err
+      }
     }
   }
+
+  const plain = plainRpc(env, tx.chainId)
+  const plainOk = await rpcMatchesChain(env, tx.chainId, plain, parent)
+  if (!plainOk) {
+    return {
+      simulation: emptySimulation('call', decoded.approvals, null),
+      reasons: [...extra, providerReason('RPC'), ...callModeReasons(tx)],
+      tokens: [],
+      spenders: [],
+    }
+  }
+
   try {
-    const simulated = await withTimeout((signal) => ethSimulate(env, tx, signal), 6_000, 'simulate')
+    const simulated = await withTimeout((signal) => ethSimulate(env, tx, signal), 6_000, 'simulate', parent)
     simulated.simulation.approvals = mergeApprovals(simulated.simulation.approvals, decoded.approvals)
+    simulated.reasons.unshift(...extra)
     return simulated
-  } catch {
-    return callFallback(env, tx, decoded, Boolean(traceUrl))
+  } catch (err) {
+    if (parent?.aborted) throw err
+    const result = await callFallback(env, tx, decoded, parent)
+    result.reasons.unshift(...extra)
+    return result
   }
 }
 
@@ -67,19 +113,17 @@ async function callFallback(
   env: AppEnv,
   tx: Tx,
   decoded: DecodedCall,
-  traceFailed: boolean,
+  parent?: AbortSignal,
 ): Promise<SimulationResult> {
+  const limits = callModeReasons(tx)
   try {
-    const result = await withTimeout((signal) => callSimulation(env, tx, decoded, signal), 4_000, 'call')
-    if (traceFailed) result.reasons.unshift({ code: 'trace_unavailable', severity: 'warn', message: TRACE_UNAVAILABLE })
+    const result = await withTimeout((signal) => callSimulation(env, tx, decoded, signal), 4_000, 'call', parent)
+    result.reasons.unshift(...limits)
     return result
   } catch {
-    const reasons: Reason[] = []
-    if (traceFailed) reasons.push({ code: 'trace_unavailable', severity: 'warn', message: TRACE_UNAVAILABLE })
-    reasons.push(providerReason('Simulation'))
     return {
       simulation: emptySimulation('call', decoded.approvals, 'simulation unavailable'),
-      reasons,
+      reasons: [...limits, providerReason('Simulation')],
       tokens: [],
       spenders: [],
     }
@@ -100,20 +144,14 @@ async function callSimulation(
   ])
   if (executed.failed && estimated.failed) throw new Error('simulation unavailable')
   const reverted = executed.reverted || estimated.reverted
-  const revertReason = executed.reason ?? estimated.reason
+  const revertReason = sanitizeRevert(executed.reason ?? estimated.reason)
   const reasons: Reason[] = []
-  if (reverted) {
-    reasons.push({
-      code: 'reverted',
-      severity: 'warn',
-      message: `Simulation reverted: ${revertReason ?? 'execution reverted'}`,
-    })
-  }
+  if (reverted) reasons.push(revertedReason())
   return {
     simulation: {
       mode: 'call',
       success: !reverted,
-      revertReason: reverted ? (revertReason ?? 'execution reverted') : null,
+      revertReason: reverted ? revertReason : null,
       assetChanges: [],
       approvals: decoded.approvals,
     },
@@ -136,7 +174,7 @@ async function traceSimulation(
     signal,
   )
   if (!result || typeof result !== 'object') throw new Error('empty trace')
-  return resultFromAcc(env, tx, walk(result as TraceFrame), 'trace', signal)
+  return resultFromAcc(env, tx, walk(result as TraceFrame, tx.from.toLowerCase()), 'trace', signal)
 }
 
 interface SimCall {
@@ -168,12 +206,13 @@ async function ethSimulate(env: AppEnv, tx: Tx, signal: AbortSignal): Promise<Si
   })
   if (calls.length === 0) throw new Error('empty simulate')
   const acc = emptyAcc()
+  const user = tx.from.toLowerCase()
   for (const call of calls) {
     if (call.error || statusReverted(call.status)) {
       acc.reverted = true
       if (!acc.revertReason) acc.revertReason = reasonFromSimCall(call)
     }
-    for (const log of call.logs ?? []) decodeLog(log, acc)
+    for (const log of call.logs ?? []) decodeLog(log, acc, user)
   }
   return resultFromAcc(env, tx, acc, 'simulate', signal)
 }
@@ -203,19 +242,14 @@ async function resultFromAcc(
   signal: AbortSignal,
 ): Promise<SimulationResult> {
   const reasons: Reason[] = []
-  if (acc.reverted) {
-    reasons.push({
-      code: 'reverted',
-      severity: 'warn',
-      message: `Simulation reverted: ${acc.revertReason ?? 'execution reverted'}`,
-    })
-  }
+  if (acc.reverted) reasons.push(revertedReason())
+  else if (acc.nested) reasons.push({ code: 'nested_revert', severity: 'warn', message: NESTED_REVERT })
   await flagCounterparties(env, tx, acc, reasons, signal)
   return {
     simulation: {
       mode,
       success: !acc.reverted,
-      revertReason: acc.reverted ? (acc.revertReason ?? 'execution reverted') : null,
+      revertReason: acc.reverted ? sanitizeRevert(acc.revertReason) : null,
       assetChanges: acc.assets,
       approvals: acc.approvals,
     },
@@ -225,8 +259,13 @@ async function resultFromAcc(
   }
 }
 
+function revertedReason(): Reason {
+  return { code: 'reverted', severity: 'warn', message: REVERTED }
+}
+
 interface Acc {
   reverted: boolean
+  nested: boolean
   revertReason: string | null
   assets: AssetChange[]
   approvals: Approval[]
@@ -237,6 +276,7 @@ interface Acc {
 function emptyAcc(): Acc {
   return {
     reverted: false,
+    nested: false,
     revertReason: null,
     assets: [],
     approvals: [],
@@ -245,16 +285,20 @@ function emptyAcc(): Acc {
   }
 }
 
-function walk(frame: TraceFrame): Acc {
+function walk(frame: TraceFrame, user: string): Acc {
   const acc = emptyAcc()
-  visit(frame, acc)
+  visit(frame, acc, true, user)
   return acc
 }
 
-function visit(frame: TraceFrame, acc: Acc): void {
+function visit(frame: TraceFrame, acc: Acc, top: boolean, user: string): void {
   if (frame.error || frame.revertReason) {
-    acc.reverted = true
-    if (!acc.revertReason) acc.revertReason = frame.revertReason || frame.error || 'execution reverted'
+    if (top) {
+      acc.reverted = true
+      if (!acc.revertReason) acc.revertReason = frame.revertReason || frame.error || 'execution reverted'
+    } else {
+      acc.nested = true
+    }
   }
   if (frame.from && frame.to && frame.value) {
     try {
@@ -271,55 +315,64 @@ function visit(frame: TraceFrame, acc: Acc): void {
       // Ignore a trace value that is not a hex quantity.
     }
   }
-  for (const log of frame.logs ?? []) decodeLog(log, acc)
-  for (const call of frame.calls ?? []) visit(call, acc)
+  for (const log of frame.logs ?? []) decodeLog(log, acc, user)
+  for (const call of frame.calls ?? []) visit(call, acc, false, user)
 }
 
-function decodeLog(log: TraceLog, acc: Acc): void {
+function decodeLog(log: TraceLog, acc: Acc, user: string): void {
   const topics = (log.topics ?? []).map((topic) => topic.toLowerCase())
   const token = log.address?.toLowerCase() ?? ''
   if (!isAddress(token) || topics.length < 3) return
   if (topics[0] === TRANSFER) {
     const amount = topics.length >= 4 ? 1n : dataWord(log.data)
     if (amount === null) return
+    const from = topicAddress(topics[1] ?? '0x0')
+    const to = topicAddress(topics[2] ?? '0x0')
     const native = token === NATIVE_LOG
     acc.assets.push({
       asset: native ? 'native' : token,
-      from: topicAddress(topics[1] ?? '0x0'),
-      to: topicAddress(topics[2] ?? '0x0'),
+      from,
+      to,
       amount: amount.toString(),
     })
-    if (!native) acc.tokens.add(token)
+    if (!native && from === user) acc.tokens.add(token)
+    if (from === user && to !== user && isAddress(to)) acc.spenders.add(to)
     return
   }
   if (topics[0] === APPROVAL_TOPIC) {
     const amount = dataWord(log.data)
     if (amount === null || amount === 0n) return
-    const spender = topicAddress(topics[2])
+    const owner = topicAddress(topics[1] ?? '0x0')
+    const spender = topicAddress(topics[2] ?? '0x0')
     acc.approvals.push({
       token,
-      owner: topicAddress(topics[1]),
+      owner,
       spender,
       amount: amount.toString(),
       operator: false,
-      unlimited: amount === MAX_UINT,
+      unlimited: amount >= NEAR_UNLIMITED,
     })
-    acc.tokens.add(token)
-    acc.spenders.add(spender)
+    if (owner === user) {
+      acc.tokens.add(token)
+      acc.spenders.add(spender)
+    }
     return
   }
   if (topics[0] === APPROVAL_FOR_ALL_TOPIC && dataWord(log.data) === 1n) {
-    const spender = topicAddress(topics[2])
+    const owner = topicAddress(topics[1] ?? '0x0')
+    const spender = topicAddress(topics[2] ?? '0x0')
     acc.approvals.push({
       token,
-      owner: topicAddress(topics[1]),
+      owner,
       spender,
       amount: null,
       operator: true,
       unlimited: true,
     })
-    acc.tokens.add(token)
-    acc.spenders.add(spender)
+    if (owner === user) {
+      acc.tokens.add(token)
+      acc.spenders.add(spender)
+    }
   }
 }
 
@@ -332,21 +385,28 @@ async function flagCounterparties(
 ): Promise<void> {
   const user = tx.from.toLowerCase()
   const needed = new Set<string>()
-  for (const approval of acc.approvals) needed.add(approval.spender)
+  for (const approval of acc.approvals) {
+    if (approval.owner === user) needed.add(approval.spender)
+  }
   for (const change of acc.assets) {
     if (change.from === user && change.to !== user) needed.add(change.to)
   }
-  const codes = new Map<string, boolean | null>()
+  const kinds = new Map<string, CodeKind>()
+  let codeFailed = false
   await Promise.all(
-    [...needed].map(async (address) => {
+    [...needed].slice(0, LOOKUP_CAP).map(async (address) => {
       const code = await getCode(env, tx.chainId, address, signal)
-      codes.set(address, codeIsEoa(code))
+      const kind = codeKind(code)
+      if (kind === 'unknown') codeFailed = true
+      kinds.set(address, kind)
     }),
   )
   if (signal.aborted) throw new Error('trace timed out')
+  if (codeFailed) reasons.push(providerReason('Code lookup'))
 
   const seenApproval = new Set<string>()
   for (const approval of acc.approvals) {
+    if (approval.owner !== user) continue
     const key = `${approval.operator ? 'all' : 'one'}:${approval.spender}`
     if (seenApproval.has(key)) continue
     seenApproval.add(key)
@@ -357,16 +417,19 @@ async function flagCounterparties(
     } else {
       reasons.push({ code: 'approval', severity: 'warn', message: APPROVAL })
     }
-    if (codes.get(approval.spender) === true) reasons.push(approvalToEoa(approval.spender))
+    const kind = kinds.get(approval.spender)
+    if (kind === 'delegated') reasons.push(eoaDelegated(approval.spender))
+    if (kind === 'eoa' || kind === 'delegated') reasons.push(approvalToEoa(approval.spender))
   }
 
   const seenValue = new Set<string>()
   for (const change of acc.assets) {
     if (change.from !== user || change.to === user || seenValue.has(change.to)) continue
     seenValue.add(change.to)
-    const eoa = codes.get(change.to)
-    if (eoa === true) reasons.push(valueToEoa(change.to))
-    else if (eoa === false) reasons.push(valueToContract(change.to))
+    const kind = kinds.get(change.to)
+    if (kind === 'delegated') reasons.push(eoaDelegated(change.to))
+    if (kind === 'eoa' || kind === 'delegated') reasons.push(valueToEoa(change.to))
+    else if (kind === 'contract') reasons.push(valueToContract(change.to))
   }
 }
 
@@ -384,6 +447,6 @@ function mergeApprovals(primary: Approval[], extra: Approval[]): Approval[] {
   return merged
 }
 
-function emptySimulation(mode: Simulation['mode'], approvals: Approval[], revertReason: string): Simulation {
+function emptySimulation(mode: Simulation['mode'], approvals: Approval[], revertReason: string | null): Simulation {
   return { mode, success: false, revertReason, assetChanges: [], approvals }
 }

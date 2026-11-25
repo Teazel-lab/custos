@@ -1,4 +1,5 @@
 import { authorize, secretField } from './auth'
+import { cacheGet, cachePut } from './cache'
 import { parseTx, requestHash, runCheck } from './check'
 import { withCors } from './cors'
 import { HttpError, json, readLimitedBody } from './http'
@@ -34,7 +35,7 @@ async function route(request: Request, env: AppEnv): Promise<Response> {
 
 async function check(request: Request, env: AppEnv): Promise<Response> {
   const access = authorize(request)
-  if (!(await allowRequest(env.CACHE, request))) return json({ error: 'Rate limit exceeded.' }, 429)
+  if (!(await allowRequest(env.CHECK_LIMIT, request))) return json({ error: 'Rate limit exceeded.' }, 429)
   const contentType = request.headers.get('Content-Type')
   if (contentType && !contentType.toLowerCase().includes('application/json')) {
     throw new HttpError(415, 'Content-Type must be application/json.')
@@ -52,13 +53,13 @@ async function check(request: Request, env: AppEnv): Promise<Response> {
   }
   const tx = parseTx(body)
   const cacheKey = `check:${await requestHash(tx)}`
-  const cached = await env.CACHE.get(cacheKey)
+  const cached = await cacheGet(env.CACHE, cacheKey)
   if (cached !== null) {
     return new Response(cached, { headers: { 'content-type': 'application/json; charset=utf-8' } })
   }
   const result = await runCheck(env, tx)
   const encoded = JSON.stringify(result)
-  await env.CACHE.put(cacheKey, encoded, { expirationTtl: 60 })
+  await cachePut(env.CACHE, cacheKey, encoded, 60)
   console.log(
     JSON.stringify({
       plan: access.plan,
@@ -75,7 +76,7 @@ async function check(request: Request, env: AppEnv): Promise<Response> {
 async function report(request: Request, env: AppEnv, url: URL): Promise<Response> {
   if (request.method !== 'GET') return json({ error: 'Not found.' }, 404)
   authorize(request)
-  if (!(await allowRequest(env.CACHE, request))) return json({ error: 'Rate limit exceeded.' }, 429)
+  if (!(await allowRequest(env.CHECK_LIMIT, request))) return json({ error: 'Rate limit exceeded.' }, 429)
   const match = /^\/report\/(0x[0-9a-fA-F]{40})$/.exec(url.pathname)
   if (!match?.[1]) return json({ error: 'Address must be a 20-byte hex string.' }, 400)
   try {

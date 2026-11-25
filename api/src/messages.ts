@@ -10,7 +10,14 @@ export const PERMIT = 'Permit signature that can grant an allowance.'
 export const PERMIT2 = 'Permit2 can grant a spender the right to pull tokens.'
 export const TRANSFER_FROM = 'transferFrom can pull tokens the caller is allowed to move.'
 export const TRACE_UNAVAILABLE =
-  'Trace provider did not answer. Simulation used eth_call only, so token movements were not decoded.'
+  'No trace or simulate result, so token movements were not decoded.'
+export const REVERTED = 'Simulation reverted.'
+export const NESTED_REVERT = 'An inner call reverted and was caught by the transaction.'
+export const UNKNOWN_CALLDATA =
+  'Calldata selector was not recognized, and call mode cannot see its effects.'
+export const VALUE_UNSIMULATED = 'Native value was not simulated. Call mode cannot see where it goes.'
+export const UNSUPPORTED_TESTNET =
+  'Honeypot.is and GoPlus do not cover this testnet. Those checks were skipped.'
 
 export function providerReason(name: string): Reason {
   return {
@@ -33,6 +40,14 @@ export function valueToEoa(to: string): Reason {
     code: 'value_to_eoa',
     severity: 'warn',
     message: `Value leaves the sender toward EOA ${to}.`,
+  }
+}
+
+export function eoaDelegated(address: string): Reason {
+  return {
+    code: 'eoa_delegated',
+    severity: 'warn',
+    message: `Address ${address} is an EOA with delegated code.`,
   }
 }
 

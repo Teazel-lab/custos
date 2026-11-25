@@ -2,8 +2,12 @@ export async function withTimeout<T>(
   run: (signal: AbortSignal) => Promise<T>,
   ms: number,
   label: string,
+  parent?: AbortSignal,
 ): Promise<T> {
+  if (parent?.aborted) throw new Error(`${label} timed out`)
   const controller = new AbortController()
+  const onParent = () => controller.abort()
+  parent?.addEventListener('abort', onParent, { once: true })
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<{ status: 'timeout' }>((resolve) => {
     timer = setTimeout(() => {
@@ -23,5 +27,6 @@ export async function withTimeout<T>(
     throw winner.err
   } finally {
     if (timer !== undefined) clearTimeout(timer)
+    parent?.removeEventListener('abort', onParent)
   }
 }

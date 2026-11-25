@@ -1,9 +1,13 @@
-import { decodeWords, padAddress } from './abi'
+import { decodeWords, padAddress, strip0x } from './abi'
+import { cacheGet, cachePut } from './cache'
 import { providerReason } from './messages'
-import { plainRpc, rpc } from './rpc'
+import { plainRpc, rpc, rpcMatchesChain } from './rpc'
 import type { AppEnv, ChainId, Reason } from './types'
 
-/** Chain 97 is the live testnet registry. Chain 56 stays empty until mainnet. */
+/**
+ * Chain 97 is the live testnet registry. Chain 56 stays null until mainnet is
+ * deployed, and checks on chain 56 return registry_unconfigured until that slot is set.
+ */
 export const REGISTRIES: Record<ChainId, string | null> = {
   56: null,
   97: '0x14df99cea96c8f0980ca0af46cb5d30de782353a',
@@ -36,7 +40,12 @@ export interface ReportResponse {
   message?: string
 }
 
-export async function registrySignal(env: AppEnv, chainId: ChainId, addresses: string[]): Promise<Reason[]> {
+export async function registrySignal(
+  env: AppEnv,
+  chainId: ChainId,
+  addresses: string[],
+  signal?: AbortSignal,
+): Promise<Reason[]> {
   if (!REGISTRIES[chainId]) {
     return [
       {
@@ -51,7 +60,7 @@ export async function registrySignal(env: AppEnv, chainId: ChainId, addresses: s
   await Promise.all(
     addresses.map(async (address) => {
       try {
-        const view = await readRegistry(env, chainId, address)
+        const view = await readRegistry(env, chainId, address, signal)
         if (!view.configured || view.reportCount === 0n) return
         reasons.push(reportReason(address, view))
       } catch {
@@ -76,28 +85,34 @@ export async function reportFor(env: AppEnv, chainId: ChainId, address: string):
   return response
 }
 
-export async function readRegistry(env: AppEnv, chainId: ChainId, address: string): Promise<RegistryView> {
+export async function readRegistry(
+  env: AppEnv,
+  chainId: ChainId,
+  address: string,
+  parent?: AbortSignal,
+): Promise<RegistryView> {
   const registry = REGISTRIES[chainId]
   if (!registry) return { configured: false, reportCount: 0n, reasons: [0n, 0n, 0n, 0n, 0n] }
   const key = `reg:${chainId}:${address}`
-  const hit = await env.CACHE.get(key)
+  const hit = await cacheGet(env.CACHE, key)
   if (hit !== null) return decodeStored(JSON.parse(hit) as StoredRegistry)
-  const signal = AbortSignal.timeout(4_000)
+  const signal = parent ? AbortSignal.any([parent, AbortSignal.timeout(4_000)]) : AbortSignal.timeout(4_000)
   const url = plainRpc(env, chainId)
+  if (!(await rpcMatchesChain(env, chainId, url, signal))) throw new Error('rpc chain mismatch')
   const padded = padAddress(address)
   const [countHex, reasonsHex] = await Promise.all([
     rpc(url, 'eth_call', [{ to: registry, data: REPORT_COUNT + padded }, 'latest'], signal),
     rpc(url, 'eth_call', [{ to: registry, data: REASONS_OF + padded }, 'latest'], signal),
   ])
   if (typeof countHex !== 'string' || typeof reasonsHex !== 'string') throw new Error('registry shape')
-  const reasons = decodeWords(reasonsHex).slice(0, 5)
-  while (reasons.length < 5) reasons.push(0n)
+  const count = requireWord(countHex)
+  const reasons = requireWords(reasonsHex, 5)
   const stored: StoredRegistry = {
     configured: true,
-    reportCount: hexBig(countHex).toString(),
-    reasons: reasons.map((count) => count.toString()),
+    reportCount: count.toString(),
+    reasons: reasons.map((item) => item.toString()),
   }
-  await env.CACHE.put(key, JSON.stringify(stored), { expirationTtl: 300 })
+  await cachePut(env.CACHE, key, JSON.stringify(stored), 300)
   return decodeStored(stored)
 }
 
@@ -137,7 +152,16 @@ function decodeStored(stored: StoredRegistry): RegistryView {
   }
 }
 
-function hexBig(hex: string): bigint {
-  if (hex === '0x' || hex === '0x0') return 0n
-  return BigInt(hex)
+/** A short eth_call result, including `0x`, is a failed read. It is not a zero count. */
+function requireWord(hex: string): bigint {
+  const words = requireWords(hex, 1)
+  return words[0] ?? 0n
+}
+
+function requireWords(hex: string, count: number): bigint[] {
+  const body = strip0x(hex)
+  if (body.length < count * 64 || !/^[0-9a-fA-F]+$/.test(body)) throw new Error('short registry result')
+  const words = decodeWords(hex).slice(0, count)
+  if (words.length < count) throw new Error('short registry result')
+  return words
 }

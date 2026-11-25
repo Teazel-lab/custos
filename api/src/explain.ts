@@ -12,20 +12,35 @@ export function templateExplanation(verdict: Verdict, reasons: Reason[]): string
 }
 
 /** Rewrites findings in plain English. The verdict string is an input, never an output. */
-export async function explain(env: AppEnv, verdict: Verdict, reasons: Reason[]): Promise<string> {
+export async function explain(
+  env: AppEnv,
+  verdict: Verdict,
+  reasons: Reason[],
+  signal?: AbortSignal,
+): Promise<string> {
   const fallback = templateExplanation(verdict, reasons)
   if (!env.LLM_API_KEY) return fallback
   try {
-    const text = await rewrite(env, verdict, reasons)
-    if (!text.startsWith(`Verdict: ${verdict}.`)) return fallback
-    if (!text.includes(WALLET_SENTENCE)) return fallback
+    const text = await rewrite(env, verdict, reasons, signal)
+    if (!acceptsRewrite(text, verdict, reasons)) return fallback
     return text
   } catch {
     return fallback
   }
 }
 
-async function rewrite(env: AppEnv, verdict: Verdict, reasons: Reason[]): Promise<string> {
+function acceptsRewrite(text: string, verdict: Verdict, reasons: Reason[]): boolean {
+  if (!text.startsWith(`Verdict: ${verdict}.`)) return false
+  if (!text.includes(WALLET_SENTENCE)) return false
+  if (verdict !== 'safe' && /\bsafe\b/i.test(text)) return false
+  for (const reason of reasons) {
+    if (!text.includes(reason.code)) return false
+  }
+  return true
+}
+
+async function rewrite(env: AppEnv, verdict: Verdict, reasons: Reason[], signal?: AbortSignal): Promise<string> {
+  const findings = reasons.map((reason) => ({ code: reason.code, message: reason.message }))
   const response = await fetch(`${env.LLM_BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -40,13 +55,14 @@ async function rewrite(env: AppEnv, verdict: Verdict, reasons: Reason[]): Promis
           role: 'system',
           content:
             `Rewrite the findings in plain English. The verdict is already decided and is ${verdict}. ` +
-            `Start with the exact text "Verdict: ${verdict}." and end with the exact sentence "${WALLET_SENTENCE}" ` +
+            `Start with the exact text "Verdict: ${verdict}." Include every reason code exactly as given. ` +
+            `End with the exact sentence "${WALLET_SENTENCE}" ` +
             'Do not change the verdict, do not add findings, and do not tell the user to sign or broadcast.',
         },
-        { role: 'user', content: JSON.stringify({ verdict, reasons }) },
+        { role: 'user', content: JSON.stringify({ verdict, reasons: findings }) },
       ],
     }),
-    signal: AbortSignal.timeout(5_000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(5_000)]) : AbortSignal.timeout(5_000),
   })
   if (!response.ok) throw new Error('llm http')
   const body = (await response.json()) as { choices?: { message?: { content?: string } }[] }

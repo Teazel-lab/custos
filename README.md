@@ -157,15 +157,19 @@ forge verify-contract --chain bsc-testnet --watch \
 
 `api/` is a Cloudflare Worker. `POST /check` inspects a transaction an agent is about to sign and returns a verdict. It never accepts a key or seed, never signs, and never broadcasts. The caller still confirms the transaction in their own wallet.
 
-The live chain 97 contracts are CustosHub `0x062D0452187094C1B2dd546B6a793A50eBDBfd06`, CustosRegistry `0x14df99CEa96C8f0980cA0aF46CB5d30de782353A`, and MockAgentID `0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945`. Chain 56 registry reads stay unwired until that deployment exists.
+The live chain 97 contracts are CustosHub `0x062D0452187094C1B2dd546B6a793A50eBDBfd06`, CustosRegistry `0x14df99CEa96C8f0980cA0aF46CB5d30de782353A`, and MockAgentID `0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945`. Chain 56 checks return a `registry_unconfigured` warning until the mainnet registry address is set. The chain 56 slot in the worker stays empty on purpose.
 
-`POST /check` takes `{ "chainId": 56 or 97, "from", "to", "data", "value" }`. `value` is a decimal or hex string. The response is `{ verdict, score, reasons, simulation, explanation, checkedAt }`. `verdict` is `safe`, `warn`, or `danger`. `simulation.mode` is `trace` when `debug_traceCall` succeeded, `simulate` when `eth_simulateV1` on `RPC_URL` succeeded, and `call` when the check used `eth_call` plus `eth_estimateGas`. The check tries those in that order. `eth_simulateV1` is called with `traceTransfers: true` and `validation: false`. Its Transfer, Approval, and ApprovalForAll logs become `assetChanges` and `approvals`; a synthetic native transfer is an asset of `native`. Call mode still decodes approve, increaseAllowance, setApprovalForAll, permit, transferFrom, and Permit2 from the calldata.
+`POST /check` takes `{ "chainId": 56 or 97, "from", "to", "data", "value" }`. `value` is a decimal string, a hex string, or a safe integer. Unknown JSON fields are rejected. The response is `{ verdict, score, reasons, simulation, explanation, checkedAt }`. `verdict` is `safe`, `warn`, or `danger`. `simulation.mode` is `trace` when `debug_traceCall` succeeded, `simulate` when `eth_simulateV1` succeeded, and `call` when the check used `eth_call` plus `eth_estimateGas`. Trace is the primary path on mainnet: Alchemy Pay As You Go answers `debug_traceCall` with `callTracer` and `withLog` on bnb-mainnet. The check then tries `eth_simulateV1` (`traceTransfers: true`, `validation: false`) on that chain's plain RPC, then `eth_call`. Each chain has its own URL. A chain 97 check never calls the chain 56 endpoint. Call mode adds `trace_unavailable`, and also warns when the selector is not a known decode or when `value` is greater than zero. It is not a clean `safe` result.
 
-`GET /health` returns `{ "ok": true }`. `GET /report/:address?chainId=97` returns that address's registry counts. `chainId` defaults to 97.
+`eth_simulateV1` and trace logs become `assetChanges` and `approvals`. A synthetic native transfer is an asset of `native`. Only logs whose owner or sender is `tx.from` feed reputation lookups. Calldata decoding covers approve, increaseAllowance, setApprovalForAll, permit (owner is the first word), transfer, safeTransferFrom, transferFrom, and Permit2. Permit2 amounts are uint160. An amount of at least 2^159 is unlimited (`approve` is `0x87517c45`, single `permit` is `0x2b67b570`, `PermitBatch` is `0x2a2d80d1`). An ERC-20 amount of at least 2^128 is unlimited. `approve(spender, 0)` is not a revoke unless `spender` is the zero address.
 
-Signals run together. A provider that times out or errors becomes a `warn` reason and the rest of the check still finishes. Token and address reputation use honeypot.is, GoPlus, and the public ScamSniffer blacklist. An optional OpenAI-compatible model may rewrite the explanation. It cannot change `verdict`; a missing key or a bad reply falls back to a template. The explanation always says to confirm the transaction in the caller's own wallet.
+`simulation.revertReason` may contain revert text from the chain. That text is untrusted: control characters are stripped and it is capped. Reason messages and the explanation use fixed strings. The optional model sees reason codes and those fixed strings, not revert data.
 
-Results are cached in KV: about 60 seconds for a check, longer for token, address, and blacklist data. Requests are limited to 60 per IP per minute. The API is free and keyless. `authorize()` is the place a later plan check would read `Authorization`.
+`GET /health` returns `{ "ok": true }`. `GET /report/:address?chainId=97` returns that address's registry counts. `chainId` defaults to 97. A short registry `eth_call` result is a failed read, not a zero count.
+
+Signals run together under one deadline of about 10 seconds. A provider that times out or errors becomes a `warn` reason and the rest of the check still finishes. Token and address reputation on chain 56 use honeypot.is, GoPlus, and the public ScamSniffer blacklist. GoPlus `address_security` is one address per request. Chain 97 skips honeypot.is and GoPlus and adds `unsupported_on_testnet`. An optional OpenAI-compatible model may rewrite the explanation. It cannot change `verdict`. A reply that says "safe" when the verdict is not safe, or that drops a reason code, falls back to the template. The explanation always says to confirm the transaction in the caller's own wallet.
+
+Results are cached in KV. Cache errors are ignored. The check cache is about 60 seconds. Code lookups are about 10 minutes, so an EIP-7702 delegation (`0xef0100`) is not treated as a contract for a day. The ScamSniffer list is stored in shards by the first address byte, and a failed download is remembered for about 5 minutes. Requests are limited to 60 per minute by the Workers Rate Limiting binding (`CHECK_LIMIT`). IPv6 clients share a key on the /64 prefix. The API is free and keyless. `authorize()` is the place a later plan check would read `Authorization`.
 
 Browser calls are allowed from `https://custosprotocol.com` and `https://www.custosprotocol.com`.
 
@@ -181,8 +185,10 @@ Put secrets in `.dev.vars` for local dev, or in production with `wrangler secret
 
 | Name | Required | Purpose |
 | --- | --- | --- |
-| `RPC_URL` | Recommended | Plain JSON-RPC. Alchemy BSC looks like `https://bnb-mainnet.g.alchemy.com/v2/<key>` (testnet: `https://bnb-testnet.g.alchemy.com/v2/<key>`). If empty, chain 56 uses `https://bsc.publicnode.com` and chain 97 uses `https://bsc-testnet.publicnode.com`. |
-| `TRACE_RPC_URL` | No | `debug_traceCall` with `callTracer` and logs. Any provider URL works; nothing in the code is tied to one vendor. If this is empty or the call errors, the check uses `eth_simulateV1` on `RPC_URL`, then `eth_call` and `eth_estimateGas`. |
+| `RPC_URL_56` | Recommended | Plain JSON-RPC for chain 56. Alchemy mainnet looks like `https://bnb-mainnet.g.alchemy.com/v2/<key>`. If empty, chain 56 uses `https://bsc.publicnode.com`. |
+| `RPC_URL_97` | Recommended | Plain JSON-RPC for chain 97. Alchemy testnet looks like `https://bnb-testnet.g.alchemy.com/v2/<key>`. If empty, chain 97 uses `https://bsc-testnet.publicnode.com`. |
+| `TRACE_RPC_URL_56` | Recommended on mainnet | `debug_traceCall` with `callTracer` and `withLog`. Primary path on mainnet. Alchemy Pay As You Go on bnb-mainnet answers it. If this is empty or the call errors, the check uses `eth_simulateV1` on `RPC_URL_56`, then `eth_call`. |
+| `TRACE_RPC_URL_97` | No | Same trace call for chain 97. |
 | `LLM_API_KEY` | No | Explanation rewrite only. |
 | `LLM_BASE_URL`, `LLM_MODEL` | No | Non-secret Worker vars. Defaults are `https://api.openai.com/v1` and `gpt-4o-mini`. |
 
@@ -192,7 +198,7 @@ Create the cache and replace the placeholder id in `api/wrangler.jsonc`:
 npx wrangler kv namespace create CUSTOS_CACHE
 ```
 
-The binding name is `CACHE`.
+The binding name is `CACHE`. `wrangler.jsonc` also binds `CHECK_LIMIT`, a Workers rate limiter of 60 requests per 60 seconds (`namespace_id` `1001`). Observability logs stay on. Traces stay off so outbound URLs that contain API keys are not recorded.
 
 ```bash
 npm test
@@ -212,4 +218,4 @@ curl -s -X POST http://localhost:8787/check \
   -d '{"chainId":97,"from":"0x0000000000000000000000000000000000000001","to":"0x0000000000000000000000000000000000000002","data":"0x","value":"0"}'
 ```
 
-Point `RPC_URL` at one network at a time. A mainnet Alchemy URL will not answer chain 97 reads.
+Set `RPC_URL_56` and `RPC_URL_97` separately. A mainnet Alchemy URL will not answer chain 97 reads, and the worker will not send a chain 97 check to it.

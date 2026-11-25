@@ -1,4 +1,5 @@
 import { decodeRevertData } from './abi'
+import { cacheGet, cachePut } from './cache'
 import type { AppEnv, ChainId } from './types'
 
 const PUBLIC_RPC: Record<ChainId, string> = {
@@ -6,7 +7,17 @@ const PUBLIC_RPC: Record<ChainId, string> = {
   97: 'https://bsc-testnet.publicnode.com',
 }
 
-const ALLOWED = new Set(['debug_traceCall', 'eth_simulateV1', 'eth_call', 'eth_estimateGas', 'eth_getCode'])
+const ALLOWED = new Set([
+  'debug_traceCall',
+  'eth_simulateV1',
+  'eth_call',
+  'eth_estimateGas',
+  'eth_getCode',
+  'eth_chainId',
+])
+
+const CODE_TTL = 600
+const CHAIN_TTL = 3_600
 
 export class RpcError extends Error {
   readonly data: unknown
@@ -22,19 +33,16 @@ export class RpcError extends Error {
 
 export type RpcFailure = 'revert' | 'rejected' | 'transport'
 
-/** Plain JSON-RPC. `RPC_URL` wins; otherwise a public endpoint for `chainId`. */
+/** Plain JSON-RPC for this chain only. A chain 56 URL is never used for chain 97. */
 export function plainRpc(env: AppEnv, chainId: ChainId): string {
-  const configured = env.RPC_URL?.trim()
+  const configured = (chainId === 56 ? env.RPC_URL_56 : env.RPC_URL_97)?.trim()
   if (configured) return configured
   return PUBLIC_RPC[chainId]
 }
 
-/**
- * Trace endpoint. The host is whatever `TRACE_RPC_URL` is set to
- * (Alchemy, NodeReal, QuickNode, or anything else). Unset means no trace.
- */
-export function traceRpc(env: AppEnv): string | undefined {
-  const configured = env.TRACE_RPC_URL?.trim()
+/** Trace endpoint for this chain only. Unset means the trace tier is skipped. */
+export function traceRpc(env: AppEnv, chainId: ChainId): string | undefined {
+  const configured = (chainId === 56 ? env.TRACE_RPC_URL_56 : env.TRACE_RPC_URL_97)?.trim()
   return configured || undefined
 }
 
@@ -76,6 +84,35 @@ export async function rpc(
   return json.result
 }
 
+/**
+ * Confirms the endpoint's eth_chainId once per URL. A transport failure does not
+ * block the check. A returned id that is not `chainId` does.
+ * The cache key is a hash of the URL so the key itself is not stored.
+ */
+export async function rpcMatchesChain(
+  env: AppEnv,
+  chainId: ChainId,
+  url: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signal?.aborted) throw new Error('aborted')
+  const key = `rpc-chain:${await sha256(url)}`
+  const hit = await cacheGet(env.CACHE, key)
+  if (hit === String(chainId)) return true
+  if (hit !== null) return false
+  try {
+    const result = await rpc(url, 'eth_chainId', [], signal)
+    if (typeof result !== 'string') return true
+    const got = Number(BigInt(result))
+    if (!Number.isFinite(got)) return true
+    await cachePut(env.CACHE, key, String(got), CHAIN_TTL)
+    return got === chainId
+  } catch (err) {
+    if (signal?.aborted) throw err
+    return true
+  }
+}
+
 export function classifyRpcError(err: unknown): RpcFailure {
   if (!(err instanceof RpcError)) return 'transport'
   const message = err.message.toLowerCase()
@@ -96,14 +133,21 @@ export function classifyRpcError(err: unknown): RpcFailure {
   return 'transport'
 }
 
-export function revertReasonOf(err: unknown): string {
+/** Revert text is untrusted. Strip controls and cap it. Callers must not put it in reasons. */
+export function sanitizeRevert(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  const cleaned = raw.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 120)
+  return cleaned.length > 0 ? cleaned : null
+}
+
+export function revertReasonOf(err: unknown): string | null {
   if (err instanceof RpcError) {
     const decoded = decodeRevertData(err.data)
-    if (decoded) return decoded
+    if (decoded) return sanitizeRevert(decoded)
     const message = err.message.replace(/^execution reverted:?\s*/i, '').trim()
-    return message || 'execution reverted'
+    return sanitizeRevert(message || 'execution reverted')
   }
-  return 'execution reverted'
+  return sanitizeRevert('execution reverted')
 }
 
 export interface Probe {
@@ -136,20 +180,33 @@ export async function getCode(
   signal?: AbortSignal,
 ): Promise<string | null> {
   const key = `code:${chainId}:${address}`
-  const hit = await env.CACHE.get(key)
+  const hit = await cacheGet(env.CACHE, key)
   if (hit !== null) return hit
   try {
-    const code = await rpc(plainRpc(env, chainId), 'eth_getCode', [address, 'latest'], signal)
+    const url = plainRpc(env, chainId)
+    if (!(await rpcMatchesChain(env, chainId, url, signal))) return null
+    const code = await rpc(url, 'eth_getCode', [address, 'latest'], signal)
     if (typeof code !== 'string') return null
-    await env.CACHE.put(key, code, { expirationTtl: 86_400 })
+    await cachePut(env.CACHE, key, code, CODE_TTL)
     return code
-  } catch {
+  } catch (err) {
+    if (signal?.aborted) throw err
     return null
   }
 }
 
-/** `true` when the address has no code, `false` when it does, `null` if the lookup failed. */
-export function codeIsEoa(code: string | null): boolean | null {
-  if (code === null) return null
-  return code === '0x' || code === '0x0'
+export type CodeKind = 'eoa' | 'delegated' | 'contract' | 'unknown'
+
+/** `0xef0100` is an EIP-7702 delegation designator. That account is still an EOA. */
+export function codeKind(code: string | null): CodeKind {
+  if (code === null) return 'unknown'
+  const normalized = code.toLowerCase()
+  if (normalized === '0x' || normalized === '0x0') return 'eoa'
+  if (normalized.startsWith('0xef0100')) return 'delegated'
+  return 'contract'
+}
+
+async function sha256(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
