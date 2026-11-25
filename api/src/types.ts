@@ -23,6 +23,8 @@ export interface AppEnv {
   /** debug_traceCall for chain 97. Empty skips the trace tier on testnet. */
   TRACE_RPC_URL_97?: string
   LLM_API_KEY?: string
+  /** Set to `1` in local dev so the API allows localhost origins. Unset in production. */
+  ALLOW_DEV_ORIGINS?: string
 }
 
 export type ChainId = 56 | 97
@@ -63,6 +65,8 @@ export interface Simulation {
 export interface CheckResponse {
   verdict: Verdict
   score: number
+  /** False when GoPlus or ScamSniffer did not answer. The verdict is then no better than warn. */
+  complete: boolean
   reasons: Reason[]
   simulation: Simulation
   explanation: string

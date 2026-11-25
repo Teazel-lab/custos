@@ -5,7 +5,15 @@ import type { AppEnv, ChainId, Reason } from './types'
 
 const SCAM_URL = 'https://raw.githubusercontent.com/scamsniffer/scam-database/main/blacklist/address.json'
 const TOKEN_TTL = 3_600
-const ADDRESS_TTL = 3_600
+/** A GoPlus body that names the token or address. */
+export const GOPLUS_RECORD_TTL = 3_600
+/** Empty GoPlus body, or a token GoPlus has not indexed. Short so a new token is not "clean" for an hour. */
+export const GOPLUS_EMPTY_TTL = 90
+/**
+ * GoPlus from a Worker often takes longer than 4s. 8s still finishes inside
+ * the check deadline. Only a successful body is written to KV.
+ */
+export const GOPLUS_TIMEOUT_MS = 8_000
 const SCAM_TTL = 21_600
 const SCAM_FAIL_TTL = 300
 const SCAM_READY = 'scam:ready'
@@ -27,13 +35,14 @@ export async function checkTokens(
   chainId: ChainId,
   tokens: string[],
   signal?: AbortSignal,
+  target?: string,
 ): Promise<Reason[]> {
   const unique = cap(tokens)
   if (unique.length === 0) return []
   if (chainId === 97) return []
   const [honeypot, goplus] = await Promise.all([
     honeypotReasons(env, chainId, unique, signal).catch(() => [providerReason('Honeypot')]),
-    goplusTokenReasons(env, chainId, unique, signal).catch(() => [providerReason('GoPlus')]),
+    goplusTokenReasons(env, chainId, unique, signal, target).catch(() => [providerReason('GoPlus')]),
   ])
   return [...honeypot, ...goplus]
 }
@@ -105,12 +114,13 @@ async function goplusTokenReasons(
   env: AppEnv,
   chainId: ChainId,
   tokens: string[],
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  target: string | undefined,
 ): Promise<Reason[]> {
-  const records = await loadGoPlusTokenRecords(env, chainId, tokens, signal)
+  const loaded = await loadGoPlusTokenRecords(env, chainId, tokens, signal)
   const reasons: Reason[] = []
   for (const token of tokens) {
-    const record = records.get(token)
+    const record = loaded.records.get(token)
     if (!record) continue
     if (record.is_honeypot === '1') {
       reasons.push({ code: 'honeypot', severity: 'danger', message: `Token ${token} looks like a honeypot.` })
@@ -122,6 +132,14 @@ async function goplusTokenReasons(
         message: `Token ${token} may not be fully sellable.`,
       })
     }
+  }
+  const wanted = target?.toLowerCase()
+  if (wanted && loaded.absent.has(wanted)) {
+    reasons.push({
+      code: 'unknown_token',
+      severity: 'warn',
+      message: `Token ${wanted} has no GoPlus record.`,
+    })
   }
   return reasons
 }
@@ -141,22 +159,7 @@ async function goplusAddressReasons(
   await Promise.all(
     addresses.map(async (address) => {
       try {
-        const record = await cachedJson<Record<string, string>>(
-          env,
-          `goplus:addr:${chainId}:${address}`,
-          ADDRESS_TTL,
-          async () => {
-            const response = await fetch(
-              `https://api.gopluslabs.io/api/v1/address_security/${address}?chain_id=${chainId}`,
-              { signal: linked(signal, 4_000) },
-            )
-            if (!response.ok) throw new Error('goplus http')
-            const body = (await response.json()) as { code?: unknown; result?: unknown }
-            if (body.code !== 1 && body.code !== '1') throw new Error('goplus code')
-            if (!body.result || typeof body.result !== 'object' || Array.isArray(body.result)) return {}
-            return body.result as Record<string, string>
-          },
-        )
+        const record = await goplusAddress(env, chainId, address, signal)
         if (ADDRESS_FLAGS.some((flag) => record[flag] === '1')) {
           reasons.push({
             code: 'address_malicious',
@@ -243,13 +246,40 @@ async function hitsFromShards(env: AppEnv, addresses: string[]): Promise<Set<str
   return hits
 }
 
+async function goplusAddress(
+  env: AppEnv,
+  chainId: ChainId,
+  address: string,
+  signal?: AbortSignal,
+): Promise<Record<string, string>> {
+  const key = `goplus:addr:${chainId}:${address}`
+  const hit = await cacheGet(env.CACHE, key)
+  if (hit !== null) return JSON.parse(hit) as Record<string, string>
+  const response = await fetch(
+    `https://api.gopluslabs.io/api/v1/address_security/${address}?chain_id=${chainId}`,
+    { signal: linked(signal, GOPLUS_TIMEOUT_MS) },
+  )
+  if (!response.ok) throw new Error('goplus http')
+  const body = (await response.json()) as { code?: unknown; result?: unknown }
+  if (body.code !== 1 && body.code !== '1') throw new Error('goplus code')
+  const record = recordObject(body.result)
+  await cachePut(env.CACHE, key, JSON.stringify(record), goplusTtl(record))
+  return record
+}
+
+interface TokenLoad {
+  records: Map<string, Record<string, string>>
+  absent: Set<string>
+}
+
 async function loadGoPlusTokenRecords(
   env: AppEnv,
   chainId: ChainId,
   tokens: string[],
   signal?: AbortSignal,
-): Promise<Map<string, Record<string, string>>> {
+): Promise<TokenLoad> {
   const records = new Map<string, Record<string, string>>()
+  const absent = new Set<string>()
   const missing: string[] = []
   for (const token of tokens) {
     const hit = await cacheGet(env.CACHE, `goplus:token:${chainId}:${token}`)
@@ -257,23 +287,49 @@ async function loadGoPlusTokenRecords(
       missing.push(token)
       continue
     }
-    if (hit !== 'none') records.set(token, JSON.parse(hit) as Record<string, string>)
+    if (hit === 'none') {
+      absent.add(token)
+      continue
+    }
+    const stored = nonempty(JSON.parse(hit) as Record<string, string>)
+    if (stored) records.set(token, stored)
+    else absent.add(token)
   }
-  if (missing.length === 0) return records
+  if (missing.length === 0) return { records, absent }
   const response = await fetch(
     `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${missing.join(',')}`,
-    { signal: linked(signal, 4_000) },
+    { signal: linked(signal, GOPLUS_TIMEOUT_MS) },
   )
   if (!response.ok) throw new Error('goplus http')
   const body = (await response.json()) as { code?: unknown; result?: Record<string, Record<string, string>> }
   if (body.code !== 1 && body.code !== '1') throw new Error('goplus code')
   const result = body.result ?? {}
   for (const token of missing) {
-    const record = lookup(result, token)
-    await cachePut(env.CACHE, `goplus:token:${chainId}:${token}`, record ? JSON.stringify(record) : 'none', TOKEN_TTL)
+    const record = nonempty(lookup(result, token))
+    await cachePut(
+      env.CACHE,
+      `goplus:token:${chainId}:${token}`,
+      record ? JSON.stringify(record) : 'none',
+      record ? GOPLUS_RECORD_TTL : GOPLUS_EMPTY_TTL,
+    )
     if (record) records.set(token, record)
+    else absent.add(token)
   }
-  return records
+  return { records, absent }
+}
+
+function recordObject(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  return value as Record<string, string>
+}
+
+function nonempty(record: Record<string, string> | null): Record<string, string> | null {
+  if (!record || Object.keys(record).length === 0) return null
+  return record
+}
+
+function goplusTtl(record: Record<string, string>): number {
+  return Object.keys(record).length === 0 ? GOPLUS_EMPTY_TTL : GOPLUS_RECORD_TTL
 }
 
 function lookup(result: Record<string, Record<string, string>>, address: string): Record<string, string> | null {
@@ -283,6 +339,7 @@ function lookup(result: Record<string, Record<string, string>>, address: string)
   return null
 }
 
+/** Caches a successful load only. A thrown load, including a timeout, is not stored. */
 async function cachedJson<T>(env: AppEnv, key: string, ttl: number, load: () => Promise<T>): Promise<T> {
   const hit = await cacheGet(env.CACHE, key)
   if (hit !== null) return JSON.parse(hit) as T

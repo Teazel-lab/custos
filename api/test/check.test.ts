@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseTx, runCheck } from '../src/check'
+import { GOPLUS_EMPTY_TTL, GOPLUS_RECORD_TTL, GOPLUS_TIMEOUT_MS } from '../src/reputation'
 import { handle } from '../src/index'
 import { WALLET_SENTENCE } from '../src/messages'
 import { clientKey } from '../src/ratelimit'
@@ -59,6 +60,7 @@ function testEnv(
     RPC_URL_56?: string
     RPC_URL_97?: string
     LLM_API_KEY?: string
+    ALLOW_DEV_ORIGINS?: string
   } = {},
 ): AppEnv & { CACHE: MemoryCache; CHECK_LIMIT: MemoryLimit } {
   return {
@@ -71,6 +73,7 @@ function testEnv(
     TRACE_RPC_URL_56: extra.TRACE_RPC_URL_56,
     TRACE_RPC_URL_97: extra.TRACE_RPC_URL_97,
     LLM_API_KEY: extra.LLM_API_KEY,
+    ALLOW_DEV_ORIGINS: extra.ALLOW_DEV_ORIGINS,
   }
 }
 
@@ -183,7 +186,8 @@ describe('POST /check', () => {
       const body = await response.json() as CheckBody
       expect(response.status).toBe(200)
       expect(body.verdict).toBe('danger')
-      expect(body.score).toBe(15)
+      expect(body.score).toBe(30)
+      expect(body.reasons.filter((reason) => reason.code === 'provider_failed').every((reason) => reason.severity === 'info')).toBe(true)
       expect(body.simulation.mode).toBe('call')
       expect(body.reasons.map((reason) => reason.code)).toContain('unlimited_approval')
       expect(body.reasons.map((reason) => reason.code)).toContain('provider_failed')
@@ -359,6 +363,7 @@ describe('POST /check', () => {
       const body = await response.json() as CheckBody
       expect(body.simulation.mode).toBe('simulate')
       expect(body.simulation.success).toBe(true)
+      expect(body.complete).toBe(true)
       expect(body.reasons.map((reason) => reason.code)).not.toContain('trace_unavailable')
     } finally {
       calls.restore()
@@ -400,7 +405,9 @@ describe('POST /check', () => {
       const body = await response.json() as CheckBody
       expect(response.status).toBe(200)
       expect(body.verdict).toBe('warn')
-      expect(body.reasons.map((reason) => reason.code)).toContain('provider_failed')
+      const failed = body.reasons.find((reason) => reason.message.startsWith('GoPlus'))
+      expect(failed?.code).toBe('provider_failed')
+      expect(failed?.severity).toBe('info')
     } finally {
       calls.restore()
     }
@@ -493,6 +500,23 @@ describe('POST /check', () => {
       }), env)
       expect(options.status).toBe(204)
       expect(options.headers.get('Access-Control-Allow-Origin')).toBe('https://www.custosprotocol.com')
+      const localOff = await handle(new Request('https://custos.test/health', {
+        headers: { Origin: 'http://localhost:5173' },
+      }), env)
+      expect(localOff.headers.get('Access-Control-Allow-Origin')).toBeNull()
+      const dev = testEnv({ ALLOW_DEV_ORIGINS: '1' })
+      const local = await handle(new Request('https://custos.test/health', {
+        headers: { Origin: 'http://localhost:5173' },
+      }), dev)
+      expect(local.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:5173')
+      const loopback = await handle(new Request('https://custos.test/health', {
+        headers: { Origin: 'http://127.0.0.1:4173' },
+      }), dev)
+      expect(loopback.headers.get('Access-Control-Allow-Origin')).toBe('http://127.0.0.1:4173')
+      const ipv6 = await handle(new Request('https://custos.test/health', {
+        headers: { Origin: 'http://[::1]:5173' },
+      }), dev)
+      expect(ipv6.headers.get('Access-Control-Allow-Origin')).toBe('http://[::1]:5173')
     } finally {
       calls.restore()
     }
@@ -936,6 +960,148 @@ describe('review regressions', () => {
     }
   })
 
+  it('caches a full GoPlus record for an hour', async () => {
+    let addressCalls = 0
+    let tokenCalls = 0
+    const env = testEnv()
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') {
+          return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        }
+        return undefined
+      },
+      (url) => {
+        if (url.includes('/address_security/')) {
+          addressCalls += 1
+          return { code: 1, result: { phishing_activities: '0' } }
+        }
+        if (url.includes('/token_security/')) {
+          tokenCalls += 1
+          return { code: 1, result: { [TOKEN]: { is_honeypot: '0', cannot_sell_all: '0' } } }
+        }
+        return undefined
+      },
+    )
+    try {
+      expect(GOPLUS_TIMEOUT_MS).toBe(8_000)
+      expect(GOPLUS_RECORD_TTL).toBe(3_600)
+      const approval = encode('095ea7b3', [BigInt(SPENDER), 1n])
+      const first = await post(env, tx(approval, 56))
+      const firstBody = await first.json() as CheckBody
+      expect(first.status).toBe(200)
+      expect(firstBody.complete).toBe(true)
+      expect(firstBody.reasons.map((reason) => reason.code)).not.toContain('provider_failed')
+      expect(firstBody.reasons.map((reason) => reason.code)).not.toContain('unknown_token')
+      const cached = [...env.CACHE.expirations.entries()].filter(([key]) => key.startsWith('goplus:'))
+      expect(cached.length).toBeGreaterThan(0)
+      expect(cached.every(([, ttl]) => ttl === GOPLUS_RECORD_TTL)).toBe(true)
+      const after = { addressCalls, tokenCalls }
+      const second = await post(env, tx(approval, 56, { from: SPENDER }))
+      expect(second.status).toBe(200)
+      expect(addressCalls).toBe(after.addressCalls)
+      expect(tokenCalls).toBe(after.tokenCalls)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('does not cache a failed GoPlus call', async () => {
+    let hits = 0
+    const env = testEnv()
+    const calls = installFetch(undefined, (url) => {
+      if (!url.includes('/address_security/')) return undefined
+      hits += 1
+      if (hits === 1) throw new Error('goplus slow')
+      return { code: 1, result: {} }
+    })
+    try {
+      await post(env, tx('0x', 56))
+      expect([...env.CACHE.expirations.keys()].some((key) => key.startsWith('goplus:'))).toBe(false)
+      await post(env, tx('0x', 56, { from: SPENDER }))
+      expect(hits).toBe(2)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('retries the same check when GoPlus failed', async () => {
+    let hits = 0
+    const env = testEnv()
+    const calls = installFetch(undefined, (url) => {
+      if (!url.includes('/address_security/')) return undefined
+      hits += 1
+      throw new Error('goplus slow')
+    })
+    try {
+      const first = await post(env, tx('0x', 56))
+      const second = await post(env, tx('0x', 56))
+      expect(hits).toBe(2)
+      expect(first.status).toBe(200)
+      expect(second.status).toBe(200)
+      expect(((await first.json()) as CheckBody).reasons.map((reason) => reason.code)).toContain('provider_failed')
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('warns when the target token has no GoPlus record and caches that for 90 seconds', async () => {
+    const env = testEnv()
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') {
+          return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        }
+        return undefined
+      },
+      (url) => {
+        if (url.includes('/token_security/')) return { code: 1, result: {} }
+        if (url.includes('/address_security/')) return { code: 1, result: {} }
+        return undefined
+      },
+    )
+    try {
+      const response = await post(env, tx(encode('095ea7b3', [BigInt(SPENDER), 1n]), 56))
+      const body = await response.json() as CheckBody
+      expect(body.reasons.map((reason) => reason.code)).toContain('unknown_token')
+      expect(body.reasons.find((reason) => reason.code === 'unknown_token')?.severity).toBe('warn')
+      expect(body.complete).toBe(true)
+      expect(body.verdict).not.toBe('safe')
+      const ttls = Object.fromEntries([...env.CACHE.expirations.entries()].filter(([key]) => key.startsWith('goplus:')))
+      expect(Object.values(ttls).every((ttl) => ttl === GOPLUS_EMPTY_TTL)).toBe(true)
+      expect(GOPLUS_EMPTY_TTL).toBe(90)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('caps an incomplete reputation check at warn', async () => {
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') {
+          return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        }
+        return undefined
+      },
+      (url) => {
+        if (url.startsWith('https://raw.githubusercontent.com/scamsniffer/')) throw new Error('scam down')
+        return undefined
+      },
+    )
+    try {
+      const response = await post(testEnv(), tx())
+      const body = await response.json() as CheckBody
+      const failed = body.reasons.find((reason) => reason.code === 'provider_failed')
+      expect(failed?.severity).toBe('info')
+      expect(body.simulation.mode).toBe('simulate')
+      expect(body.complete).toBe(false)
+      expect(body.verdict).toBe('warn')
+      expect(body.score).toBe(85)
+    } finally {
+      calls.restore()
+    }
+  })
+
   it('rejects unknown body fields and still finishes a pre-aborted check', async () => {
     const calls = installFetch()
     try {
@@ -955,6 +1121,7 @@ describe('review regressions', () => {
 interface CheckBody {
   verdict: string
   score: number
+  complete: boolean
   reasons: { code: string; severity: string; message: string }[]
   simulation: {
     mode: string

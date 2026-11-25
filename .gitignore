@@ -13,3 +13,8 @@ contracts/lib/
 api/node_modules/
 api/.wrangler/
 api/.dev.vars
+
+# Website
+web/node_modules/
+web/dist/
+web/.wrangler/
