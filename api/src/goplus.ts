@@ -4,8 +4,9 @@ import type { AppEnv, KvStore } from './types'
 /**
  * Token endpoint and signature: https://docs.gopluslabs.io/reference/getaccesstokenusingpost
  * `expires_in` is a duration in seconds: https://docs.gopluslabs.io/reference/response-details-10
- * Security calls want `Authorization: Bearer <access_token>`:
- * https://docs.gopluslabs.io/reference/tokensecurityusingget_1
+ * The token-security page shows `Authorization: Bearer <access_token>`
+ * (https://docs.gopluslabs.io/reference/tokensecurityusingget_1). A live call
+ * rejects that, and lowercase `bearer`, with code 4012. Send the bare token.
  *
  * Numeric `code` values are not on those pages. The official Node SDK lists
  * 4010 app key missing, 4011 signature expired, 4012 signature mismatch,
@@ -45,15 +46,18 @@ export class ProviderError extends Error {
   readonly detail: string
   /** True when a different access token might make this same GoPlus call succeed. */
   readonly auth: boolean
-  /** True when the app key or signature was rejected. */
+  /** True when the app key or signature was rejected on the token endpoint. */
   readonly credential: boolean
+  /** True when this data call should be retried once with no Authorization header. */
+  readonly dropAuth: boolean
 
-  constructor(detail: string, auth = false, credential = false) {
+  constructor(detail: string, auth = false, credential = false, dropAuth = false) {
     super(detail)
     this.name = 'ProviderError'
     this.detail = detail
     this.auth = auth
     this.credential = credential
+    this.dropAuth = dropAuth
   }
 }
 
@@ -99,7 +103,8 @@ export function providerHeaders(authorization?: string): Record<string, string> 
     Accept: 'application/json',
     'User-Agent': PROVIDER_USER_AGENT,
   }
-  if (authorization) headers.Authorization = `Bearer ${authorization}`
+  // GoPlus rejects a Bearer prefix on token_security and address_security (code 4012).
+  if (authorization) headers.Authorization = authorization
   return headers
 }
 
@@ -132,7 +137,10 @@ export async function fetchGoPlus(env: AppEnv, url: string, signal?: AbortSignal
   try {
     return await requestGoPlus(env, url, authorization, signal)
   } catch (err) {
-    if (!(err instanceof ProviderError) || !err.auth || !authorization) throw err
+    if (!(err instanceof ProviderError) || !authorization) throw err
+    // 4012 on a data call is a bad header, not a bad app secret. Do not refresh or back off.
+    if (err.dropAuth) return requestGoPlus(env, url, undefined, signal)
+    if (!err.auth) throw err
     const refreshed = await accessToken(env, signal, authorization)
     if (refreshed === authorization) throw err
     return requestGoPlus(env, url, refreshed, signal)
@@ -291,7 +299,8 @@ async function requestGoPlus(
       code: loggedCode(body?.code),
       message: clipMessage(body?.message, secrets),
     })
-    throw new ProviderError(detail, isAuthFailure(response.status, body?.code))
+    const dropAuth = isDataSignatureFailure(body?.code)
+    throw new ProviderError(detail, !dropAuth && isAuthFailure(response.status, body?.code), false, dropAuth)
   }
   return body ?? {}
 }
@@ -347,8 +356,13 @@ function isInvalidToken(code: unknown): boolean {
   return code === 4022 || code === '4022'
 }
 
+/** Only the token endpoint. The same 4012 on a security call is a header problem. */
 function isCredentialCode(code: unknown): boolean {
   return code === 4010 || code === '4010' || code === 4011 || code === '4011' || code === 4012 || code === '4012'
+}
+
+function isDataSignatureFailure(code: unknown): boolean {
+  return code === 4012 || code === '4012'
 }
 
 function codeLabel(code: unknown): string {
