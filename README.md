@@ -17,8 +17,8 @@ Opt-in log for one wallet.
 | `constructor(address agentId)` | Stores the Agent ID token. Immutable. Reverts if it is the zero address or has no code. |
 | `activate()` | The first call requires Agent ID. Marks the wallet protected and emits `Activated(address indexed wallet, uint256 timestamp)`. |
 | `logCheck(bytes32 txHash, uint8 verdict)` | Protected wallets only. `0` green, `1` orange, `2` red. Reverts if `verdict > 2`. Emits `CheckLogged(address indexed wallet, bytes32 indexed txHash, uint8 verdict, uint256 timestamp)` and increments that wallet's counter. |
-| `isProtected(address) → bool` | Whether the wallet has activated. |
-| `checkCount(address) → uint256` | How many checks that wallet has logged. |
+| `isProtected(address) → bool` | True after the wallet activated while holding Agent ID. It stays true if the wallet later loses the token. |
+| `checkCount(address) → uint256` | How many checks that wallet logged. A self-reported signal, not a trust score. |
 | `activatedCount() → uint256` | How many distinct wallets have activated. |
 | `agentId() → address` | The token set at construction. |
 
@@ -35,7 +35,7 @@ Community reports against addresses (contracts or EOAs). Wallets are raw address
 | `constructor(address agentId)` | Stores the Agent ID token. Immutable. Reverts if it is the zero address or has no code. |
 | `report(address target, uint8 reason)` | Agent ID holders only. One active report per reporter per target. |
 | `retract(address target)` | The original reporter withdraws their active report. Counts go back down. |
-| `reportCount(address) → uint256` | Active reports on a target. |
+| `reportCount(address) → uint256` | Active reports on a target. A self-reported signal, not a trust score. |
 | `reasonsOf(address) → uint256[5]` | Per-reason counts. Index `0` is reason `1`, index `4` is reason `5`. |
 | `hasReported(address reporter, address target) → bool` | Whether that reporter has an active report on the target. |
 | `reportOf(address reporter, address target) → (uint8 reason, bool active)` | The report row. `reason` is `0` when it is not active. |
@@ -51,7 +51,7 @@ Reason codes:
 | 4 | Owner can mint or rug |
 | 5 | Other |
 
-Anything outside `1..5` reverts. The zero address as a target reverts. A second active report from the same reporter on the same target reverts with `AlreadyReported`. Retract, then report again, to change the reason. `retract` does not check Agent ID; only the reporter who filed the active report can withdraw it.
+Anything outside `1..5` reverts. The zero address as a target reverts. A second active report from the same reporter on the same target reverts with `AlreadyReported`. Retract, then report again, to change the reason. `retract` does not check Agent ID; only the reporter who filed the active report can withdraw it. A report from a wallet that later loses Agent ID stays counted until that reporter retracts it.
 
 `Reported(address indexed target, address indexed reporter, uint8 reason)` and `Retracted(address indexed target, address indexed reporter, uint8 reason)` are the log.
 
@@ -61,7 +61,7 @@ Test-only. `mint(address)` increases `balanceOf`. It is open, it is not soulboun
 
 ## Admin powers: none
 
-Neither contract has an owner, admin, pauser, upgrader, or proxy. No function is payable. No function transfers a token, sets an approval, or pulls a signature. The Agent ID address cannot be changed after deployment. Nobody can deactivate a wallet, delete another reporter's row, or rewrite a logged verdict. There is no role that can pause `report` or `activate`. The Agent ID registry's own owner can admin-register holders; that is inherited trust in the token, not a power of these contracts.
+Neither contract has an owner, admin, pauser, upgrader, or proxy. No function is payable. No function transfers a token, sets an approval, or pulls a signature. The Agent ID address cannot be changed after deployment. Nobody can deactivate a wallet, delete another reporter's row, or rewrite a logged verdict. There is no role that can pause `report` or `activate`. The Agent ID registry's own owner can admin-register holders; that is inherited trust in the token, not a power of these contracts. If that token's owner pauses or changes it, new `activate` and `report` calls revert. `logCheck` and `retract` keep working.
 
 ## Safety
 
@@ -84,13 +84,12 @@ forge test --gas-report
 
 Compiler: solc `0.8.28`, optimizer `200` runs, EVM `cancun`. `foundry.toml` reads `BSC_RPC_URL`, `BSC_TESTNET_RPC_URL`, and `ETHERSCAN_API_KEY` from the environment. Forge loads `contracts/.env`.
 
-Gas below is from separate transactions on a local node against `MockAgentID` (solc 0.8.28, optimizer 200, Cancun). Transaction gas is the receipt total, including the 21,000 base cost. Call gas is the contract execution. A repeat `activate` does not read Agent ID. The real Agent ID token can move the first `activate` and a new `report` by the cost of `balanceOf`.
+Gas below is copied from `forge test --gas-report` (solc 0.8.28, optimizer 200, Cancun) against `MockAgentID`. The figures are every call in the suite, so `activate` min is the already-protected return and max is a first activation. A real Agent ID `balanceOf` can move the calls that read it.
 
-| Call | Call gas | Transaction gas |
-| --- | --- | --- |
-| `activate`, first time | 51,548 | 72,612 |
-| `activate`, already protected | 2,335 | 23,399 |
-| `report`, new active report | 74,800 | 96,156 |
+| Function | Min | Avg | Median | Max |
+| --- | --- | --- | --- | --- |
+| `activate` | 21,107 | 54,135 | 72,612 | 72,612 |
+| `report` | 21,615 | 81,236 | 79,260 | 96,372 |
 
 ## Deploy
 
@@ -109,7 +108,7 @@ forge script script/DeployTestnet.s.sol \
   --account custos \
   --broadcast \
   --verify \
-  --chain bsc_testnet
+  --chain bsc-testnet
 
 # Chain 56. Deploys CustosHub and CustosRegistry against the Agent ID token above.
 forge script script/DeployMainnet.s.sol \
@@ -132,7 +131,7 @@ On chain 56 the wallet must already hold the soulbound Agent ID token. Custos ca
 
 ## Verify
 
-`contracts/foundry.toml` points chain 56 and chain 97 at Etherscan API V2 (`https://api.etherscan.io/v2/api?chainid=56` and `chainid=97`). `--chain bsc` or `--chain bsc_testnet` selects that entry. `ETHERSCAN_API_KEY` is an Etherscan key.
+`contracts/foundry.toml` points chain 56 and chain 97 at Etherscan API V2 (`https://api.etherscan.io/v2/api?chainid=56` and `chainid=97`). `--chain bsc` or `--chain bsc-testnet` selects that entry. `ETHERSCAN_API_KEY` is an Etherscan key. Etherscan API V2 verification on BSC may need a paid plan. If that rejects the submission, verify with BscScan or Sourcify (`--verifier sourcify`).
 
 Chain 56, after you have the deployed addresses:
 
@@ -147,9 +146,9 @@ forge verify-contract --chain bsc --watch \
   "$REGISTRY" src/CustosRegistry.sol:CustosRegistry --constructor-args "$ARGS"
 ```
 
-Chain 97 uses the deployed `MockAgentID` address as the constructor argument and `--chain bsc_testnet`. Verify the mock with no constructor arguments:
+Chain 97 uses the deployed `MockAgentID` address as the constructor argument and `--chain bsc-testnet`. Verify the mock with no constructor arguments:
 
 ```bash
-forge verify-contract --chain bsc_testnet --watch \
+forge verify-contract --chain bsc-testnet --watch \
   "$MOCK" script/mocks/MockAgentID.sol:MockAgentID
 ```

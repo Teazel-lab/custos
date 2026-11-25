@@ -10,20 +10,24 @@ import {CustosRegistry} from "../src/CustosRegistry.sol";
 /// @dev The signer comes from `forge script --account`. This file does not
 ///      read or embed a key.
 contract DeployTestnet is Script {
+    MockAgentID public deployedAgentId;
+    CustosHub public deployedHub;
+    CustosRegistry public deployedRegistry;
+
     error UnexpectedChain(uint256 chainId);
 
     function run() external {
         if (block.chainid != 97) revert UnexpectedChain(block.chainid);
 
         vm.startBroadcast();
-        MockAgentID agentId = new MockAgentID();
-        CustosHub hub = new CustosHub(address(agentId));
-        CustosRegistry registry = new CustosRegistry(address(agentId));
+        deployedAgentId = new MockAgentID();
+        deployedHub = new CustosHub(address(deployedAgentId));
+        deployedRegistry = new CustosRegistry(address(deployedAgentId));
         vm.stopBroadcast();
 
         console.log("chainId:", block.chainid);
-        console.log("MockAgentID:", address(agentId));
-        console.log("CustosHub:", address(hub));
-        console.log("CustosRegistry:", address(registry));
+        console.log("MockAgentID:", address(deployedAgentId));
+        console.log("CustosHub:", address(deployedHub));
+        console.log("CustosRegistry:", address(deployedRegistry));
     }
 }

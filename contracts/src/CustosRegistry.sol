@@ -83,6 +83,7 @@ contract CustosRegistry {
         if (filed.active) revert AlreadyReported();
 
         // Holder read happens before this call writes.
+        // forge-lint: disable-next-line(incorrect-strict-equality)
         if (IBalanceOf(agentId).balanceOf(msg.sender) == 0) revert NotAgentIdHolder();
 
         filed.active = true;

@@ -59,6 +59,7 @@ contract CustosHub {
     ///      that is already protected returns immediately and does not read Agent ID.
     function activate() external {
         if (_protected[msg.sender]) return;
+        // forge-lint: disable-next-line(incorrect-strict-equality)
         if (IBalanceOf(agentId).balanceOf(msg.sender) == 0) revert NotAgentIdHolder();
 
         _protected[msg.sender] = true;
