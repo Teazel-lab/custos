@@ -1,0 +1,39 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "custos-check",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true
+    },
+    "traces": {
+      "enabled": false
+    }
+  },
+  // Non-secret defaults. Per-chain RPC URLs and LLM_API_KEY are Wrangler secrets.
+  // Traces stay off so outbound URLs that contain API keys are not recorded.
+  "vars": {
+    "LLM_BASE_URL": "https://api.openai.com/v1",
+    "LLM_MODEL": "gpt-4o-mini"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      // Replace with `wrangler kv namespace create CUSTOS_CACHE`.
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "CHECK_LIMIT",
+      "namespace_id": "1001",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
+    }
+  ]
+}
