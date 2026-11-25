@@ -6,9 +6,11 @@ import type { AppEnv, ChainId, Reason } from './types'
 
 const SCAM_URL = 'https://raw.githubusercontent.com/scamsniffer/scam-database/main/blacklist/address.json'
 const TOKEN_TTL = 3_600
-/** A GoPlus body that names the token or address. */
-export const GOPLUS_RECORD_TTL = 3_600
-/** Empty GoPlus body, or a token GoPlus has not indexed. Short so a new token is not "clean" for an hour. */
+/** A GoPlus body with a real security answer. Flags change slowly. */
+export const GOPLUS_RECORD_TTL = 21_600
+/** Address flags that are all zero. Unknown addresses look like this. */
+export const GOPLUS_ADDRESS_CLEAN_TTL = 1_800
+/** Empty GoPlus body, a partial token, or a token GoPlus has not indexed. */
 export const GOPLUS_EMPTY_TTL = 90
 /**
  * GoPlus from a Worker often takes longer than 4s. 8s still finishes inside
@@ -295,7 +297,7 @@ async function goplusAddress(
     signal,
   )
   const record = recordObject(body.result)
-  await cachePut(env.CACHE, key, JSON.stringify(record), goplusTtl(record))
+  await cachePut(env.CACHE, key, JSON.stringify(record), goplusAddressTtl(record))
   return record
 }
 
@@ -323,9 +325,9 @@ async function loadGoPlusTokenRecords(
       absent.add(token)
       continue
     }
-    const stored = nonempty(JSON.parse(hit) as Record<string, string>)
-    if (stored) records.set(token, stored)
-    else absent.add(token)
+    const stored = JSON.parse(hit) as Record<string, string>
+    records.set(token, stored)
+    if (!tokenComplete(stored)) absent.add(token)
   }
   if (missing.length === 0) return { records, absent }
   const body = await fetchGoPlus(
@@ -335,15 +337,21 @@ async function loadGoPlusTokenRecords(
   )
   const result = (body.result ?? {}) as Record<string, Record<string, string>>
   for (const token of missing) {
-    const record = nonempty(lookup(result, token))
+    const record = lookup(result, token)
+    if (!record) {
+      await cachePut(env.CACHE, `goplus:token:${chainId}:${token}`, 'none', GOPLUS_EMPTY_TTL)
+      absent.add(token)
+      continue
+    }
+    const complete = tokenComplete(record)
     await cachePut(
       env.CACHE,
       `goplus:token:${chainId}:${token}`,
-      record ? JSON.stringify(record) : 'none',
-      record ? GOPLUS_RECORD_TTL : GOPLUS_EMPTY_TTL,
+      JSON.stringify(record),
+      complete ? GOPLUS_RECORD_TTL : GOPLUS_EMPTY_TTL,
     )
-    if (record) records.set(token, record)
-    else absent.add(token)
+    records.set(token, record)
+    if (!complete) absent.add(token)
   }
   return { records, absent }
 }
@@ -353,13 +361,19 @@ function recordObject(value: unknown): Record<string, string> {
   return value as Record<string, string>
 }
 
-function nonempty(record: Record<string, string> | null): Record<string, string> | null {
-  if (!record || Object.keys(record).length === 0) return null
-  return record
+function goplusAddressTtl(record: Record<string, string>): number {
+  if (ADDRESS_FLAGS.some((flag) => record[flag] === '1')) return GOPLUS_RECORD_TTL
+  if (Object.keys(record).length === 0) return GOPLUS_EMPTY_TTL
+  return GOPLUS_ADDRESS_CLEAN_TTL
 }
 
-function goplusTtl(record: Record<string, string>): number {
-  return Object.keys(record).length === 0 ? GOPLUS_EMPTY_TTL : GOPLUS_RECORD_TTL
+/** Both answers are present, so the record can be cached for hours and is not unknown. */
+function tokenComplete(record: Record<string, string> | null): boolean {
+  if (!record) return false
+  const honeypot = record.is_honeypot
+  if (honeypot !== '0' && honeypot !== '1') return false
+  const sell = record.cannot_sell_all
+  return typeof sell === 'string' && sell.length > 0
 }
 
 function lookup(result: Record<string, Record<string, string>>, address: string): Record<string, string> | null {

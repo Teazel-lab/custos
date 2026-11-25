@@ -28,6 +28,11 @@ export const GOPLUS_TOKEN_MAX_TTL = 86_400
 export const GOPLUS_TOKEN_BACKOFF_SECONDS = 120
 /** A bad key or signature will not start working on the next check. */
 export const GOPLUS_CREDENTIAL_BACKOFF_SECONDS = 3_600
+/** KV will not store a TTL under 60 seconds, so the post-4029 pause is one minute. */
+export const GOPLUS_RATE_LIMIT_SECONDS = 60
+export const GOPLUS_RATE_LIMIT_KEY = 'goplus:rate'
+export const GOPLUS_RATE_LIMIT_DELAY_MIN_MS = 300
+export const GOPLUS_RATE_LIMIT_DELAY_MAX_MS = 700
 export const PROVIDER_USER_AGENT = 'CustosProtocol/1.0 (+https://api.custosprotocol.com)'
 
 const TOKEN_PREFIX = 'goplus:auth:'
@@ -41,6 +46,13 @@ interface TokenSlot {
 
 /** One in-flight token fetch per cache binding, so two tests do not share a token. */
 const slots = new WeakMap<object, Map<string, TokenSlot>>()
+/** Absolute time when this isolate stops calling GoPlus. A KV read must not push it later than the stored deadline. */
+let rateLimitedUntil = 0
+
+/** Tests share one isolate. Production code does not call this. */
+export function clearGoPlusRateLimitForTests(): void {
+  rateLimitedUntil = 0
+}
 
 export class ProviderError extends Error {
   readonly detail: string
@@ -48,13 +60,19 @@ export class ProviderError extends Error {
   readonly retry: 'refresh' | 'noauth' | undefined
   /** True when the app key or signature was rejected on the token endpoint. */
   readonly credential: boolean
+  /** GoPlus JSON `code`, when the body had one. */
+  readonly code: number | undefined
+  /** HTTP status, when the response was not OK. */
+  readonly status: number | undefined
 
-  constructor(detail: string, retry?: 'refresh' | 'noauth', credential = false) {
+  constructor(detail: string, retry?: 'refresh' | 'noauth', credential = false, code?: number, status?: number) {
     super(detail)
     this.name = 'ProviderError'
     this.detail = detail
     this.retry = retry
     this.credential = credential
+    this.code = code
+    this.status = status
   }
 }
 
@@ -130,6 +148,9 @@ function goplusCredentials(env: AppEnv): GoPlusCreds | undefined {
 }
 
 export async function fetchGoPlus(env: AppEnv, url: string, signal?: AbortSignal): Promise<GoPlusBody> {
+  if (rateLimitActive() || (await cooledDown(env))) {
+    throw new ProviderError('GoPlus rate limited')
+  }
   const cacheKey = await authCacheKey(env)
   if (cacheKey && (await cacheGet(env.CACHE, noAuthKey(cacheKey))) !== null) {
     return requestGoPlus(env, url, undefined, signal)
@@ -163,12 +184,12 @@ async function recoverDataCall(
     } catch (next) {
       if (!(next instanceof ProviderError) || next.retry !== 'noauth') throw next
       if (cacheKey) await forgetToken(env, cacheKey, refreshed)
-      return callWithoutAuth(env, url, signal, cacheKey)
+      return callWithoutAuth(env, url, signal, cacheKey, true)
     }
   }
   if (!headerRejected(err)) throw err
   if (cacheKey) await forgetToken(env, cacheKey, failed)
-  return callWithoutAuth(env, url, signal, cacheKey)
+  return callWithoutAuth(env, url, signal, cacheKey, false)
 }
 
 async function callWithoutAuth(
@@ -176,20 +197,21 @@ async function callWithoutAuth(
   url: string,
   signal: AbortSignal | undefined,
   cacheKey: string | undefined,
+  rejectedTwice: boolean,
 ): Promise<GoPlusBody> {
-  const body = await requestGoPlus(env, url, undefined, signal)
-  if (cacheKey) await cachePut(env.CACHE, noAuthKey(cacheKey), '1', GOPLUS_TOKEN_BACKOFF_SECONDS)
-  return body
+  if (rejectedTwice && cacheKey) await cachePut(env.CACHE, noAuthKey(cacheKey), '1', GOPLUS_TOKEN_BACKOFF_SECONDS)
+  return requestGoPlus(env, url, undefined, signal)
 }
 
 async function forgetToken(env: AppEnv, cacheKey: string, rejected: string): Promise<void> {
   const slot = slotFor(env.CACHE, cacheKey)
   if (slot.current === rejected) slot.current = undefined
-  await cacheDelete(env.CACHE, cacheKey)
+  const cached = await cacheGet(env.CACHE, cacheKey)
+  if (cached === rejected) await cacheDelete(env.CACHE, cacheKey)
 }
 
 function headerRejected(err: ProviderError): boolean {
-  return err.detail === 'GoPlus code 4012'
+  return isCode(err.code, 4012)
 }
 
 async function accessToken(env: AppEnv, signal: AbortSignal | undefined, failed?: string): Promise<string | undefined> {
@@ -324,6 +346,48 @@ async function requestGoPlus(
   signal: AbortSignal | undefined,
   refreshed = false,
 ): Promise<GoPlusBody> {
+  if (rateLimitActive()) throw new ProviderError('GoPlus rate limited')
+  try {
+    return await goplusOnce(env, url, authorization, signal, refreshed)
+  } catch (err) {
+    if (!(err instanceof ProviderError) || !isRateLimit(err) || signal?.aborted) throw err
+    // The first 4029 in this isolate owns the single retry. Everyone else stops.
+    if (!(await armRateLimit(env))) throw new ProviderError('GoPlus rate limited')
+    await rateLimitPause(signal)
+    return goplusOnce(env, url, authorization, signal, refreshed)
+  }
+}
+
+function rateLimitActive(): boolean {
+  return Date.now() < rateLimitedUntil
+}
+
+/** True the first time this window is opened. Later calls in the window do not write KV again. */
+async function armRateLimit(env: AppEnv): Promise<boolean> {
+  const now = Date.now()
+  if (rateLimitedUntil > now) return false
+  rateLimitedUntil = now + GOPLUS_RATE_LIMIT_SECONDS * 1000
+  await cachePut(env.CACHE, GOPLUS_RATE_LIMIT_KEY, String(rateLimitedUntil), GOPLUS_RATE_LIMIT_SECONDS)
+  return true
+}
+
+/** A stored deadline in the past does not start a new 60 second window. */
+async function cooledDown(env: AppEnv): Promise<boolean> {
+  const raw = await cacheGet(env.CACHE, GOPLUS_RATE_LIMIT_KEY)
+  if (raw === null) return false
+  const until = Number(raw)
+  if (!Number.isFinite(until) || until <= Date.now()) return false
+  if (until > rateLimitedUntil) rateLimitedUntil = until
+  return true
+}
+
+async function goplusOnce(
+  env: AppEnv,
+  url: string,
+  authorization: string | undefined,
+  signal: AbortSignal | undefined,
+  refreshed: boolean,
+): Promise<GoPlusBody> {
   const creds = goplusCredentials(env)
   const secrets = [creds?.appKey, creds?.appSecret, authorization].filter((value): value is string => Boolean(value))
   let response: Response
@@ -339,7 +403,8 @@ async function requestGoPlus(
   }
   const body = await readBody(response)
   if (!response.ok || !successCode(body?.code)) {
-    const detail = !response.ok && !isCode(body?.code, 4012)
+    const code = numericCode(body?.code)
+    const detail = !response.ok && !isCode(code, 4012)
       ? `GoPlus HTTP ${response.status}`
       : `GoPlus code ${codeLabel(body?.code)}`
     logProviderFailure('GoPlus', {
@@ -348,9 +413,41 @@ async function requestGoPlus(
       code: loggedCode(body?.code),
       message: clipMessage(body?.message, secrets),
     })
-    throw new ProviderError(detail, dataRetry(response.status, body?.code, refreshed))
+    throw new ProviderError(
+      detail,
+      dataRetry(response.status, body?.code, refreshed),
+      false,
+      code,
+      response.ok ? undefined : response.status,
+    )
   }
   return body ?? {}
+}
+
+function isRateLimit(err: ProviderError): boolean {
+  return isCode(err.code, 4029) || err.status === 429
+}
+
+/** 300–700ms, and it stops early when the check deadline aborts. */
+export function goplusRateLimitDelayMs(): number {
+  const span = GOPLUS_RATE_LIMIT_DELAY_MAX_MS - GOPLUS_RATE_LIMIT_DELAY_MIN_MS
+  return GOPLUS_RATE_LIMIT_DELAY_MIN_MS + Math.floor(Math.random() * (span + 1))
+}
+
+function rateLimitPause(signal: AbortSignal | undefined): Promise<void> {
+  const ms = goplusRateLimitDelayMs()
+  if (signal?.aborted) return Promise.reject(abortReason(signal))
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(abortReason(signal as AbortSignal))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 function slotFor(kv: KvStore, cacheKey: string): TokenSlot {
@@ -416,8 +513,14 @@ function isCredentialCode(code: unknown): boolean {
   return isCode(code, 4010) || isCode(code, 4011) || isCode(code, 4012)
 }
 
-function isCode(code: unknown, expected: number): boolean {
+export function isCode(code: unknown, expected: number): boolean {
   return code === expected || code === String(expected)
+}
+
+function numericCode(code: unknown): number | undefined {
+  if (!isCode(code, Number(code))) return undefined
+  const value = typeof code === 'number' ? code : Number(code)
+  return Number.isInteger(value) ? value : undefined
 }
 
 function codeLabel(code: unknown): string {
