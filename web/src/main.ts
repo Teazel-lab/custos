@@ -32,6 +32,22 @@ function boot(): void {
   brand.prepend(logoMark())
   const cta = routeLink('/activate', 'Protect your agent', 'cta')
   cta.append(arrowIcon())
+  const menu = el('button', {
+    class: 'menu-toggle',
+    attrs: { type: 'button', 'aria-expanded': 'false', 'aria-controls': 'primary-nav', 'aria-label': 'Open menu' },
+    children: [el('span', { class: 'menu-icon', attrs: { 'aria-hidden': 'true' } })],
+  })
+  const links = el('nav', {
+    class: 'nav-links',
+    attrs: { id: 'primary-nav', 'aria-label': 'Primary' },
+    children: [
+      routeLink('/', 'Home'),
+      routeLink('/#how', 'How it works'),
+      routeLink('/scanner', 'Check'),
+      routeLink('/activate', 'Agents'),
+      routeLink('/#docs', 'Docs'),
+    ],
+  })
   const nav = el('header', {
     class: 'topbar',
     children: [
@@ -40,21 +56,29 @@ function boot(): void {
         class: 'topbar-inner',
         children: [
           brand,
-          el('nav', {
-            class: 'nav-links',
-            attrs: { 'aria-label': 'Primary' },
-            children: [
-              routeLink('/', 'Home'),
-              routeLink('/#how', 'How it works'),
-              routeLink('/scanner', 'Check'),
-              routeLink('/activate', 'Agents'),
-              routeLink('/#docs', 'Docs'),
-            ],
-          }),
-          el('div', { class: 'nav-end', children: [chip, cta] }),
+          links,
+          el('div', { class: 'nav-end', children: [chip, cta, menu] }),
         ],
       }),
     ],
+  })
+  const setMenu = (open: boolean) => {
+    menu.setAttribute('aria-expanded', open ? 'true' : 'false')
+    menu.setAttribute('aria-label', open ? 'Close menu' : 'Open menu')
+    nav.classList.toggle('is-open', open)
+  }
+  menu.addEventListener('click', () => setMenu(menu.getAttribute('aria-expanded') !== 'true'))
+  links.addEventListener('click', (event) => {
+    if (event.target instanceof Element && event.target.closest('a')) setMenu(false)
+  })
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && menu.getAttribute('aria-expanded') === 'true') {
+      setMenu(false)
+      menu.focus()
+    }
+  })
+  document.addEventListener('click', (event) => {
+    if (event.target instanceof Node && !nav.contains(event.target)) setMenu(false)
   })
   const outlet = el('main', { attrs: { id: 'content' } })
   outlet.tabIndex = -1
@@ -76,6 +100,7 @@ function boot(): void {
   const show = () => {
     const path = currentPath()
     document.body.dataset.page = path === '/' ? 'home' : 'inner'
+    setMenu(false)
     document.title = titles[path] ?? 'Custos'
     markCurrent(nav, path)
     const pathChanged = path !== active
