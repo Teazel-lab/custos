@@ -6,8 +6,8 @@ import {CustosHub} from "../src/CustosHub.sol";
 import {CustosRegistry} from "../src/CustosRegistry.sol";
 
 /// @notice Deploy CustosHub and CustosRegistry on chain 56 against Agent ID.
-/// @dev The signer comes from `forge script --account` or `--private-key`.
-///      This file does not read or embed a key. It does not deploy a mock.
+/// @dev The signer comes from `forge script --account`. This file does not
+///      read or embed a key. It does not deploy a mock.
 contract DeployMainnet is Script {
     /// @dev Verified soulbound Agent ID token on chain 56.
     address internal constant AGENT_ID = 0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F;

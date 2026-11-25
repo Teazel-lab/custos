@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {IBalanceOf} from "./IBalanceOf.sol";
 
 /// @title CustosRegistry
 /// @notice Community reports filed by Agent ID holders against contract addresses.
@@ -38,6 +38,9 @@ contract CustosRegistry {
     /// @notice `agentId` was the zero address.
     error ZeroAgentId();
 
+    /// @notice `agentId` has no code.
+    error AgentIdNotContract();
+
     /// @notice `target` was the zero address.
     error ZeroTarget();
 
@@ -50,13 +53,13 @@ contract CustosRegistry {
     /// @notice This reporter has no active report on the target.
     error NoActiveReport();
 
-    /// @param target Contract the report is about.
+    /// @param target Address the report is about. A contract or an EOA.
     /// @param reporter Agent ID holder who filed it.
     /// @param reason 1 drainer, 2 honeypot, 3 phishing approval or permit,
     ///        4 owner can mint or rug, 5 other.
     event Reported(address indexed target, address indexed reporter, uint8 reason);
 
-    /// @param target Contract the report was about.
+    /// @param target Address the report was about.
     /// @param reporter Agent ID holder who withdrew it.
     /// @param reason The reason that was withdrawn.
     event Retracted(address indexed target, address indexed reporter, uint8 reason);
@@ -64,21 +67,23 @@ contract CustosRegistry {
     /// @param agentId_ Agent ID token. Immutable for the life of this contract.
     constructor(address agentId_) {
         if (agentId_ == address(0)) revert ZeroAgentId();
+        if (agentId_.code.length == 0) revert AgentIdNotContract();
         agentId = agentId_;
     }
 
     /// @notice File one active report against `target`.
-    /// @param target Contract address. Must not be zero.
+    /// @param target Any non-zero address, contract or EOA.
     /// @param reason 1 drainer, 2 honeypot, 3 phishing approval or permit,
     ///        4 owner can mint or rug, 5 other.
     function report(address target, uint8 reason) external {
         if (target == address(0)) revert ZeroTarget();
         if (reason == 0 || reason > REASON_OTHER) revert InvalidReason();
-        // Holder read happens before this call writes.
-        if (IERC721(agentId).balanceOf(msg.sender) == 0) revert NotAgentIdHolder();
 
         Report storage filed = _reports[msg.sender][target];
         if (filed.active) revert AlreadyReported();
+
+        // Holder read happens before this call writes.
+        if (IBalanceOf(agentId).balanceOf(msg.sender) == 0) revert NotAgentIdHolder();
 
         filed.active = true;
         filed.reason = reason;

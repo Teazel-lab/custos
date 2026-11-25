@@ -2,13 +2,13 @@
 pragma solidity ^0.8.24;
 
 import {Script, console} from "forge-std/Script.sol";
-import {MockAgentID} from "../src/MockAgentID.sol";
+import {MockAgentID} from "./mocks/MockAgentID.sol";
 import {CustosHub} from "../src/CustosHub.sol";
 import {CustosRegistry} from "../src/CustosRegistry.sol";
 
 /// @notice Deploy MockAgentID, CustosHub, and CustosRegistry on chain 97.
-/// @dev The signer comes from `forge script --account` or `--private-key`.
-///      This file does not read or embed a key.
+/// @dev The signer comes from `forge script --account`. This file does not
+///      read or embed a key.
 contract DeployTestnet is Script {
     error UnexpectedChain(uint256 chainId);
 

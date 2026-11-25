@@ -3,7 +3,8 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {CustosRegistry} from "../src/CustosRegistry.sol";
-import {MockAgentID} from "../src/MockAgentID.sol";
+import {IBalanceOf} from "../src/IBalanceOf.sol";
+import {MockAgentID} from "../script/mocks/MockAgentID.sol";
 
 contract CustosRegistryTest is Test {
     MockAgentID internal agentId;
@@ -28,6 +29,11 @@ contract CustosRegistryTest is Test {
     function test_constructor_rejectsZeroAgentId() public {
         vm.expectRevert(CustosRegistry.ZeroAgentId.selector);
         new CustosRegistry(address(0));
+    }
+
+    function test_constructor_rejectsEmptyCode() public {
+        vm.expectRevert(CustosRegistry.AgentIdNotContract.selector);
+        new CustosRegistry(makeAddr("eoa"));
     }
 
     function test_report_holderEmitsAndCounts() public {
@@ -231,5 +237,134 @@ contract CustosRegistryTest is Test {
             sum += counts[i];
         }
         assertEq(sum, expected);
+    }
+
+    /// @dev Same reporter retracts and files a different reason. Buckets move with the total.
+    function testFuzz_sameReporter_retractThenDifferentReason(uint8 first, uint8 second) public {
+        first = uint8(bound(first, 1, 5));
+        second = uint8(bound(second, 1, 4));
+        if (second >= first) second += 1;
+
+        vm.startPrank(holder);
+        registry.report(target, first);
+        registry.retract(target);
+        registry.report(target, second);
+        vm.stopPrank();
+
+        assertEq(registry.reportCount(target), 1);
+        assertEq(registry.reasonsOf(target)[first - 1], 0);
+        assertEq(registry.reasonsOf(target)[second - 1], 1);
+        (uint8 reason, bool active) = registry.reportOf(holder, target);
+        assertEq(reason, second);
+        assertTrue(active);
+
+        uint256[5] memory counts = registry.reasonsOf(target);
+        uint256 sum;
+        for (uint256 i = 0; i < 5; i++) {
+            sum += counts[i];
+        }
+        assertEq(sum, registry.reportCount(target));
+    }
+
+    function test_retract_afterLostId_decrementsCounts() public {
+        vm.prank(holder);
+        registry.report(target, 3);
+        _setBalance(holder, 0);
+
+        vm.prank(holder);
+        vm.expectEmit(true, true, false, true);
+        emit CustosRegistry.Retracted(target, holder, 3);
+        registry.retract(target);
+
+        assertEq(registry.reportCount(target), 0);
+        assertEq(registry.reasonsOf(target)[2], 0);
+        assertFalse(registry.hasReported(holder, target));
+        (uint8 reason, bool active) = registry.reportOf(holder, target);
+        assertEq(reason, 0);
+        assertFalse(active);
+    }
+
+    function test_retract_neverHeld_reverts() public {
+        _setBalance(stranger, 0);
+        vm.prank(stranger);
+        vm.expectRevert(CustosRegistry.NoActiveReport.selector);
+        registry.retract(target);
+        assertEq(registry.reportCount(target), 0);
+    }
+
+    function test_retract_strangerNeverHeld_doesNotClear() public {
+        vm.prank(holder);
+        registry.report(target, 1);
+        _setBalance(stranger, 0);
+
+        vm.prank(stranger);
+        vm.expectRevert(CustosRegistry.NoActiveReport.selector);
+        registry.retract(target);
+
+        assertEq(registry.reportCount(target), 1);
+        assertEq(registry.reasonsOf(target)[0], 1);
+        assertTrue(registry.hasReported(holder, target));
+    }
+
+    function test_retract_twice_reverts() public {
+        vm.startPrank(holder);
+        registry.report(target, 2);
+        registry.retract(target);
+        vm.expectRevert(CustosRegistry.NoActiveReport.selector);
+        registry.retract(target);
+        vm.stopPrank();
+
+        assertEq(registry.reportCount(target), 0);
+        assertEq(registry.reasonsOf(target)[1], 0);
+    }
+
+    function test_report_afterLostId_reverts() public {
+        address otherTarget = makeAddr("other-target");
+        vm.prank(holder);
+        registry.report(target, 4);
+        _setBalance(holder, 0);
+
+        vm.prank(holder);
+        vm.expectRevert(CustosRegistry.NotAgentIdHolder.selector);
+        registry.report(otherTarget, 1);
+
+        assertEq(registry.reportCount(target), 1);
+        assertEq(registry.reportCount(otherTarget), 0);
+        assertEq(registry.reasonsOf(target)[3], 1);
+        (uint8 reason, bool active) = registry.reportOf(holder, target);
+        assertEq(reason, 4);
+        assertTrue(active);
+    }
+
+    function test_report_duplicateRevertsBeforeHolderCheck() public {
+        vm.prank(holder);
+        registry.report(target, 2);
+        _setBalance(holder, 0);
+
+        vm.prank(holder);
+        vm.expectRevert(CustosRegistry.AlreadyReported.selector);
+        registry.report(target, 5);
+
+        assertEq(registry.reportCount(target), 1);
+        assertEq(registry.reasonsOf(target)[1], 1);
+        (uint8 reason, bool active) = registry.reportOf(holder, target);
+        assertEq(reason, 2);
+        assertTrue(active);
+    }
+
+    function test_retract_rejectsValue() public {
+        vm.prank(holder);
+        registry.report(target, 1);
+        vm.deal(holder, 1 ether);
+        vm.prank(holder);
+        (bool ok,) = address(registry).call{value: 1}(abi.encodeCall(CustosRegistry.retract, (target)));
+        assertFalse(ok);
+        assertEq(registry.reportCount(target), 1);
+        assertTrue(registry.hasReported(holder, target));
+        assertEq(address(registry).balance, 0);
+    }
+
+    function _setBalance(address account, uint256 amount) internal {
+        vm.mockCall(address(agentId), abi.encodeCall(IBalanceOf.balanceOf, (account)), abi.encode(amount));
     }
 }

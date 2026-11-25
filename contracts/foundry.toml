@@ -9,7 +9,7 @@ optimizer_runs = 200
 ffi = false
 
 # Install from this directory (not vendored):
-# forge install foundry-rs/forge-std@v1.17.0 OpenZeppelin/openzeppelin-contracts@v5.7.0 --no-git
+# forge install foundry-rs/forge-std@v1.17.0 --no-git
 
 [rpc_endpoints]
 bsc = "${BSC_RPC_URL}"

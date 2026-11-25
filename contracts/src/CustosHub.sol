@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {IBalanceOf} from "./IBalanceOf.sol";
 
 /// @title CustosHub
 /// @notice Opt-in log for an agent that already ran a pre-sign check.
 /// @dev No owner, no admin, no proxy, and no payable function. The Agent ID
-///      token is fixed at construction. `activate` is idempotent: a wallet
-///      that is already protected can call it again and nothing changes.
-///      `logCheck` does not store verdicts. It increments a per-wallet counter
-///      and emits the verdict. Protection is a latch; `logCheck` does not
-///      re-read Agent ID.
+///      token is fixed at construction. The first `activate` requires a holder.
+///      A later call from a protected wallet returns immediately and does not
+///      read Agent ID. `logCheck` does not store verdicts. It increments a
+///      per-wallet counter and emits the verdict. Protection is a latch;
+///      `logCheck` does not re-read Agent ID.
 contract CustosHub {
     /// @notice Agent ID token. Holder check is `balanceOf(addr) > 0`.
     address public immutable agentId;
@@ -27,6 +27,9 @@ contract CustosHub {
     /// @notice `agentId` was the zero address.
     error ZeroAgentId();
 
+    /// @notice `agentId` has no code.
+    error AgentIdNotContract();
+
     /// @notice The caller has not activated.
     error NotProtected();
 
@@ -40,21 +43,23 @@ contract CustosHub {
     /// @param wallet The protected wallet the check was logged for.
     /// @param txHash Hash of the transaction the agent reviewed. Not executed here.
     /// @param verdict 0 green, 1 orange, 2 red.
-    event CheckLogged(address indexed wallet, bytes32 indexed txHash, uint8 verdict);
+    /// @param timestamp Block timestamp of the log.
+    event CheckLogged(address indexed wallet, bytes32 indexed txHash, uint8 verdict, uint256 timestamp);
 
     /// @param agentId_ Agent ID token. Immutable for the life of this contract.
     constructor(address agentId_) {
         if (agentId_ == address(0)) revert ZeroAgentId();
+        if (agentId_.code.length == 0) revert AgentIdNotContract();
         agentId = agentId_;
     }
 
-    /// @notice Mark the caller as protected. Free. Idempotent.
-    /// @dev The first successful call sets the latch, increments `activatedCount`,
-    ///      and emits `Activated`. Later calls by the same wallet return without
-    ///      an event and without changing the counter.
+    /// @notice Mark the caller as protected.
+    /// @dev The first call requires Agent ID, sets the latch, increments
+    ///      `activatedCount`, and emits `Activated`. A later call from a wallet
+    ///      that is already protected returns immediately and does not read Agent ID.
     function activate() external {
-        if (IERC721(agentId).balanceOf(msg.sender) == 0) revert NotAgentIdHolder();
         if (_protected[msg.sender]) return;
+        if (IBalanceOf(agentId).balanceOf(msg.sender) == 0) revert NotAgentIdHolder();
 
         _protected[msg.sender] = true;
         activatedCount += 1;
@@ -69,7 +74,7 @@ contract CustosHub {
         if (verdict > 2) revert InvalidVerdict();
 
         _checks[msg.sender] += 1;
-        emit CheckLogged(msg.sender, txHash, verdict);
+        emit CheckLogged(msg.sender, txHash, verdict, block.timestamp);
     }
 
     /// @notice Whether `wallet` has activated.

@@ -2,10 +2,9 @@
 pragma solidity ^0.8.24;
 
 /// @title MockAgentID
-/// @notice Test and testnet stand-in for Agent ID. Custos only reads `balanceOf`.
-/// @dev `mint` is open and this token is not soulbound. Do not deploy it on
-///      mainnet and do not point a mainnet hub or registry at it. Mainnet uses
-///      the Agent ID token at 0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F.
+/// @notice Test-only stand-in for Agent ID. Custos only reads `balanceOf`.
+/// @dev Not for mainnet. `mint` is open and this token is not soulbound.
+///      The chain 97 script deploys it. Do not point a mainnet hub or registry at it.
 contract MockAgentID {
     mapping(address owner => uint256) public balanceOf;
 
