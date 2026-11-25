@@ -1,4 +1,4 @@
-import { cacheGet, cachePut } from './cache'
+import { cacheDelete, cacheGet, cachePut } from './cache'
 import type { AppEnv, KvStore } from './types'
 
 /**
@@ -44,20 +44,17 @@ const slots = new WeakMap<object, Map<string, TokenSlot>>()
 
 export class ProviderError extends Error {
   readonly detail: string
-  /** True when a different access token might make this same GoPlus call succeed. */
-  readonly auth: boolean
+  /** How a failed data call may be retried. Absent on token-endpoint and transport errors. */
+  readonly retry: 'refresh' | 'noauth' | undefined
   /** True when the app key or signature was rejected on the token endpoint. */
   readonly credential: boolean
-  /** True when this data call should be retried once with no Authorization header. */
-  readonly dropAuth: boolean
 
-  constructor(detail: string, auth = false, credential = false, dropAuth = false) {
+  constructor(detail: string, retry?: 'refresh' | 'noauth', credential = false) {
     super(detail)
     this.name = 'ProviderError'
     this.detail = detail
-    this.auth = auth
+    this.retry = retry
     this.credential = credential
-    this.dropAuth = dropAuth
   }
 }
 
@@ -103,7 +100,7 @@ export function providerHeaders(authorization?: string): Record<string, string> 
     Accept: 'application/json',
     'User-Agent': PROVIDER_USER_AGENT,
   }
-  // GoPlus rejects a Bearer prefix on token_security and address_security (code 4012).
+  // Bare token, not Bearer. See the token-security note above.
   if (authorization) headers.Authorization = authorization
   return headers
 }
@@ -133,18 +130,66 @@ function goplusCredentials(env: AppEnv): GoPlusCreds | undefined {
 }
 
 export async function fetchGoPlus(env: AppEnv, url: string, signal?: AbortSignal): Promise<GoPlusBody> {
+  const cacheKey = await authCacheKey(env)
+  if (cacheKey && (await cacheGet(env.CACHE, noAuthKey(cacheKey))) !== null) {
+    return requestGoPlus(env, url, undefined, signal)
+  }
   const authorization = await accessToken(env, signal)
   try {
     return await requestGoPlus(env, url, authorization, signal)
   } catch (err) {
-    if (!(err instanceof ProviderError) || !authorization) throw err
-    // 4012 on a data call is a bad header, not a bad app secret. Do not refresh or back off.
-    if (err.dropAuth) return requestGoPlus(env, url, undefined, signal)
-    if (!err.auth) throw err
-    const refreshed = await accessToken(env, signal, authorization)
-    if (refreshed === authorization) throw err
-    return requestGoPlus(env, url, refreshed, signal)
+    if (!(err instanceof ProviderError) || err.retry !== 'refresh' || !authorization) throw err
+    return recoverDataCall(env, url, signal, cacheKey, authorization, err)
   }
+}
+
+/**
+ * A data-call 4012 may be a stale token or a header GoPlus will not accept.
+ * Refresh once. If the new token is also rejected with 4012, or no new token
+ * is available, drop the header for this call. A plain 401 or 4022 only refreshes.
+ */
+async function recoverDataCall(
+  env: AppEnv,
+  url: string,
+  signal: AbortSignal | undefined,
+  cacheKey: string | undefined,
+  failed: string,
+  err: ProviderError,
+): Promise<GoPlusBody> {
+  const refreshed = await accessToken(env, signal, failed)
+  if (refreshed && refreshed !== failed) {
+    try {
+      return await requestGoPlus(env, url, refreshed, signal, true)
+    } catch (next) {
+      if (!(next instanceof ProviderError) || next.retry !== 'noauth') throw next
+      if (cacheKey) await forgetToken(env, cacheKey, refreshed)
+      return callWithoutAuth(env, url, signal, cacheKey)
+    }
+  }
+  if (!headerRejected(err)) throw err
+  if (cacheKey) await forgetToken(env, cacheKey, failed)
+  return callWithoutAuth(env, url, signal, cacheKey)
+}
+
+async function callWithoutAuth(
+  env: AppEnv,
+  url: string,
+  signal: AbortSignal | undefined,
+  cacheKey: string | undefined,
+): Promise<GoPlusBody> {
+  const body = await requestGoPlus(env, url, undefined, signal)
+  if (cacheKey) await cachePut(env.CACHE, noAuthKey(cacheKey), '1', GOPLUS_TOKEN_BACKOFF_SECONDS)
+  return body
+}
+
+async function forgetToken(env: AppEnv, cacheKey: string, rejected: string): Promise<void> {
+  const slot = slotFor(env.CACHE, cacheKey)
+  if (slot.current === rejected) slot.current = undefined
+  await cacheDelete(env.CACHE, cacheKey)
+}
+
+function headerRejected(err: ProviderError): boolean {
+  return err.detail === 'GoPlus code 4012'
 }
 
 async function accessToken(env: AppEnv, signal: AbortSignal | undefined, failed?: string): Promise<string | undefined> {
@@ -266,7 +311,8 @@ async function requestToken(creds: GoPlusCreds): Promise<IssuedToken> {
       code: loggedCode(body?.code),
       message: clipMessage(body?.message, secrets),
     })
-    throw new ProviderError(detail, false, isCredentialCode(body?.code))
+    // 4010, 4011, and 4012 on /token are a bad key or signature. The same 4012 on a data call is not.
+    throw new ProviderError(detail, undefined, isCredentialCode(body?.code))
   }
   return token
 }
@@ -276,6 +322,7 @@ async function requestGoPlus(
   url: string,
   authorization: string | undefined,
   signal: AbortSignal | undefined,
+  refreshed = false,
 ): Promise<GoPlusBody> {
   const creds = goplusCredentials(env)
   const secrets = [creds?.appKey, creds?.appSecret, authorization].filter((value): value is string => Boolean(value))
@@ -292,15 +339,16 @@ async function requestGoPlus(
   }
   const body = await readBody(response)
   if (!response.ok || !successCode(body?.code)) {
-    const detail = !response.ok ? `GoPlus HTTP ${response.status}` : `GoPlus code ${codeLabel(body?.code)}`
+    const detail = !response.ok && !isCode(body?.code, 4012)
+      ? `GoPlus HTTP ${response.status}`
+      : `GoPlus code ${codeLabel(body?.code)}`
     logProviderFailure('GoPlus', {
       op: 'security',
       status: response.status,
       code: loggedCode(body?.code),
       message: clipMessage(body?.message, secrets),
     })
-    const dropAuth = isDataSignatureFailure(body?.code)
-    throw new ProviderError(detail, !dropAuth && isAuthFailure(response.status, body?.code), false, dropAuth)
+    throw new ProviderError(detail, dataRetry(response.status, body?.code, refreshed))
   }
   return body ?? {}
 }
@@ -329,6 +377,16 @@ function failKey(cacheKey: string): string {
   return `${cacheKey}:fail`
 }
 
+function noAuthKey(cacheKey: string): string {
+  return `${cacheKey}:noauth`
+}
+
+async function authCacheKey(env: AppEnv): Promise<string | undefined> {
+  const creds = goplusCredentials(env)
+  if (!creds) return undefined
+  return tokenCacheKey(creds.appKey)
+}
+
 function tokenValue(result: unknown): IssuedToken | undefined {
   if (!result || typeof result !== 'object') return undefined
   const record = result as { access_token?: unknown; expires_in?: unknown }
@@ -344,25 +402,22 @@ function successCode(code: unknown): boolean {
 }
 
 /**
- * Refresh on HTTP 401 and on GoPlus 4022 (invalid token), including a 403
- * whose JSON says 4022. A bare 403 is treated as edge blocking, not a bad token.
+ * First 4012 refreshes, including an HTTP 401 body that says 4012. A second
+ * 4012 drops the header. HTTP 401 or code 4022 only refreshes. A bare 403 does neither.
  */
-function isAuthFailure(status: number, code: unknown): boolean {
-  if (isInvalidToken(code)) return true
-  return status === 401
+function dataRetry(status: number, code: unknown, refreshed: boolean): 'refresh' | 'noauth' | undefined {
+  if (isCode(code, 4012)) return refreshed ? 'noauth' : 'refresh'
+  if (refreshed) return undefined
+  if (status === 401 || isCode(code, 4022)) return 'refresh'
+  return undefined
 }
 
-function isInvalidToken(code: unknown): boolean {
-  return code === 4022 || code === '4022'
-}
-
-/** Only the token endpoint. The same 4012 on a security call is a header problem. */
 function isCredentialCode(code: unknown): boolean {
-  return code === 4010 || code === '4010' || code === 4011 || code === '4011' || code === 4012 || code === '4012'
+  return isCode(code, 4010) || isCode(code, 4011) || isCode(code, 4012)
 }
 
-function isDataSignatureFailure(code: unknown): boolean {
-  return code === 4012 || code === '4012'
+function isCode(code: unknown, expected: number): boolean {
+  return code === expected || code === String(expected)
 }
 
 function codeLabel(code: unknown): string {

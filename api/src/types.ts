@@ -1,6 +1,7 @@
 export interface KvStore {
   get(key: string): Promise<string | null>
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
+  delete(key: string): Promise<void>
 }
 
 /** Workers Rate Limiting binding. `limit` must not be able to take the check down. */
