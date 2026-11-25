@@ -50,6 +50,12 @@ class MemoryCache {
     this.store.set(key, value)
     this.expirations.set(key, options?.expirationTtl)
   }
+
+  async delete(key: string): Promise<void> {
+    if (this.fail) throw new Error('kv down')
+    this.store.delete(key)
+    this.expirations.delete(key)
+  }
 }
 
 class MemoryLimit {
@@ -1235,14 +1241,14 @@ describe('GoPlus auth', () => {
       expect(first.status).toBe(200)
       expect(JSON.parse(firstText).complete).toBe(true)
       expect(tokenPosts).toBe(1)
-      expect(authorizations).toEqual([`Bearer ${ACCESS_TOKEN}`])
+      expect(authorizations).toEqual([ACCESS_TOKEN])
       const ttl = [...env.CACHE.expirations.entries()].find(([key]) => key.startsWith('goplus:auth:'))?.[1]
       expect(ttl).toBe(7140)
       const second = await post(env, tx('0x', 56, { to: SPENDER }))
       const secondText = await second.text()
       expect(second.status).toBe(200)
       expect(tokenPosts).toBe(1)
-      expect(authorizations).toEqual([`Bearer ${ACCESS_TOKEN}`, `Bearer ${ACCESS_TOKEN}`])
+      expect(authorizations).toEqual([ACCESS_TOKEN, ACCESS_TOKEN])
       expectNoSecrets(`${firstText}\n${secondText}\n${logs.join('\n')}`)
     } finally {
       console.log = original
@@ -1276,7 +1282,7 @@ describe('GoPlus auth', () => {
       expect(body.reasons.map((reason) => reason.code)).not.toContain('provider_failed')
       expect(tokenPosts).toBe(2)
       expect(addressCalls).toBe(2)
-      expect(authorizations).toEqual([`Bearer ${ACCESS_TOKEN}`, `Bearer ${ROTATED_TOKEN}`])
+      expect(authorizations).toEqual([ACCESS_TOKEN, ROTATED_TOKEN])
       expectNoSecrets(text)
     } finally {
       calls.restore()
@@ -1387,6 +1393,222 @@ describe('GoPlus auth', () => {
     }
   })
 
+  it('refreshes once on a data-call 4012 and keeps the new token when that call succeeds', async () => {
+    const env = testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET })
+    let tokenPosts = 0
+    const authorizations: Array<string | undefined> = []
+    const logs: string[] = []
+    const original = console.log
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '))
+    }
+    const calls = installFetch(undefined, (url, init) => {
+      if (url === GOPLUS_TOKEN_URL) {
+        tokenPosts += 1
+        const token = tokenPosts === 1 ? ACCESS_TOKEN : ROTATED_TOKEN
+        return { code: 1, result: { access_token: token, expires_in: 7200 } }
+      }
+      if (url.includes('/address_security/')) {
+        const authorization = headerValue(init, 'Authorization')
+        authorizations.push(authorization)
+        if (authorization === ACCESS_TOKEN) return { code: 4012, message: 'signature verification failure' }
+        return { code: 1, result: { phishing_activities: '0' } }
+      }
+      return undefined
+    })
+    try {
+      const response = await post(env, tx('0x', 56))
+      const text = await response.text()
+      const body = JSON.parse(text) as CheckBody
+      expect(body.complete).toBe(true)
+      expect(body.reasons.map((reason) => reason.code)).not.toContain('provider_failed')
+      expect(tokenPosts).toBe(2)
+      expect(authorizations).toEqual([ACCESS_TOKEN, ROTATED_TOKEN])
+      expect([...env.CACHE.expirations.keys()].some((key) => key.endsWith(':noauth') || key.endsWith(':fail'))).toBe(false)
+      expectNoSecrets(`${text}\n${logs.join('\n')}`)
+    } finally {
+      console.log = original
+      calls.restore()
+    }
+  })
+
+  it('drops the header after a 4012 when refresh cannot replace the token, and remembers that for two minutes', async () => {
+    const env = testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET })
+    let tokenPosts = 0
+    const authorizations: Array<string | undefined> = []
+    const logs: string[] = []
+    const original = console.log
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '))
+    }
+    const calls = installFetch(undefined, (url, init) => {
+      if (url === GOPLUS_TOKEN_URL) {
+        tokenPosts += 1
+        return { code: 1, result: { access_token: ACCESS_TOKEN, expires_in: 7200 } }
+      }
+      if (url.includes('/address_security/')) {
+        const authorization = headerValue(init, 'Authorization')
+        authorizations.push(authorization)
+        if (authorization) return { code: 4012, message: 'signature verification failure' }
+        return { code: 1, result: { phishing_activities: '0' } }
+      }
+      return undefined
+    })
+    try {
+      const first = await post(env, tx('0x', 56))
+      const firstText = await first.text()
+      const firstBody = JSON.parse(firstText) as CheckBody
+      expect(firstBody.complete).toBe(true)
+      expect(tokenPosts).toBe(2)
+      expect(authorizations).toEqual([ACCESS_TOKEN, undefined])
+      const marker = [...env.CACHE.expirations.entries()].find(([key]) => key.endsWith(':noauth'))
+      expect(marker?.[1]).toBe(GOPLUS_TOKEN_BACKOFF_SECONDS)
+      expect([...env.CACHE.expirations.keys()].some((key) => key.startsWith('goplus:auth:') && !key.endsWith(':noauth'))).toBe(false)
+      const second = await post(env, tx('0x', 56, { to: SPENDER }))
+      const secondText = await second.text()
+      expect(tokenPosts).toBe(2)
+      expect(authorizations).toEqual([ACCESS_TOKEN, undefined, undefined])
+      expectNoSecrets(`${firstText}\n${secondText}\n${logs.join('\n')}`)
+    } finally {
+      console.log = original
+      calls.restore()
+    }
+  })
+
+  it('stops after the headerless retry when that call still fails', async () => {
+    const env = testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET })
+    let dataCalls = 0
+    const logs: string[] = []
+    const original = console.log
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '))
+    }
+    const calls = installFetch(undefined, (url, init) => {
+      if (url === GOPLUS_TOKEN_URL) return { code: 1, result: { access_token: ACCESS_TOKEN, expires_in: 7200 } }
+      if (!url.includes('/address_security/')) return undefined
+      dataCalls += 1
+      if (headerValue(init, 'Authorization')) return { code: 4012, message: 'signature verification failure' }
+      return new Response('no', { status: 500 })
+    })
+    try {
+      const response = await post(env, tx('0x', 56))
+      const text = await response.text()
+      const body = JSON.parse(text) as CheckBody
+      expect(body.complete).toBe(false)
+      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus HTTP 500')
+      expect(dataCalls).toBe(2)
+      expect([...env.CACHE.expirations.keys()].some((key) => key.endsWith(':noauth'))).toBe(false)
+      expectNoSecrets(`${text}\n${logs.join('\n')}`)
+    } finally {
+      console.log = original
+      calls.restore()
+    }
+  })
+
+  it('does not retry a 4012 when no GoPlus credentials are set', async () => {
+    let dataCalls = 0
+    const logs: string[] = []
+    const original = console.log
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '))
+    }
+    const calls = installFetch(undefined, (url) => {
+      if (url === GOPLUS_TOKEN_URL) throw new Error('token endpoint')
+      if (!url.includes('/address_security/')) return undefined
+      dataCalls += 1
+      return { code: 4012, message: 'signature verification failure' }
+    })
+    try {
+      const response = await post(testEnv(), tx('0x', 56))
+      const text = await response.text()
+      const body = JSON.parse(text) as CheckBody
+      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus code 4012')
+      expect(dataCalls).toBe(1)
+      expect(calls.some((url) => url === GOPLUS_TOKEN_URL)).toBe(false)
+      expectNoSecrets(`${text}\n${logs.join('\n')}`)
+    } finally {
+      console.log = original
+      calls.restore()
+    }
+  })
+
+  it('treats HTTP 401 with code 4012 as a data-call 4012, not a refresh-only 401', async () => {
+    const env = testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET })
+    let tokenPosts = 0
+    const authorizations: Array<string | undefined> = []
+    const logs: string[] = []
+    const original = console.log
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '))
+    }
+    const calls = installFetch(undefined, (url, init) => {
+      if (url === GOPLUS_TOKEN_URL) {
+        tokenPosts += 1
+        const token = tokenPosts === 1 ? ACCESS_TOKEN : ROTATED_TOKEN
+        return { code: 1, result: { access_token: token, expires_in: 7200 } }
+      }
+      if (!url.includes('/address_security/')) return undefined
+      const authorization = headerValue(init, 'Authorization')
+      authorizations.push(authorization)
+      if (authorization) {
+        return new Response(JSON.stringify({ code: 4012, message: 'signature verification failure' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return { code: 1, result: { phishing_activities: '0' } }
+    })
+    try {
+      const response = await post(env, tx('0x', 56))
+      const text = await response.text()
+      const body = JSON.parse(text) as CheckBody
+      expect(body.complete).toBe(true)
+      expect(tokenPosts).toBe(2)
+      expect(authorizations).toEqual([ACCESS_TOKEN, ROTATED_TOKEN, undefined])
+      expect(logs.some((line) => line.includes('"status":401') && line.includes('"code":"4012"'))).toBe(true)
+      expectNoSecrets(`${text}\n${logs.join('\n')}`)
+    } finally {
+      console.log = original
+      calls.restore()
+    }
+  })
+
+  it('refreshes a token_security 4012 and retries that call with the new token', async () => {
+    const env = testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET })
+    const authorizations: Array<string | undefined> = []
+    const logs: string[] = []
+    const original = console.log
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '))
+    }
+    let tokenPosts = 0
+    const calls = installFetch(undefined, (url, init) => {
+      if (url === GOPLUS_TOKEN_URL) {
+        tokenPosts += 1
+        const token = tokenPosts === 1 ? ACCESS_TOKEN : ROTATED_TOKEN
+        return { code: 1, result: { access_token: token, expires_in: 7200 } }
+      }
+      if (!url.includes('/token_security/')) return undefined
+      const authorization = headerValue(init, 'Authorization')
+      authorizations.push(authorization)
+      if (authorization === ACCESS_TOKEN) return { code: 4012, message: 'signature verification failure' }
+      return { code: 1, result: { [TOKEN]: { is_honeypot: '0', cannot_sell_all: '0' } } }
+    })
+    try {
+      const approval = encode('095ea7b3', [BigInt(SPENDER), 1n])
+      const response = await post(env, tx(approval, 56))
+      const text = await response.text()
+      const body = JSON.parse(text) as CheckBody
+      expect(body.complete).toBe(true)
+      expect(body.reasons.map((reason) => reason.code)).not.toContain('provider_failed')
+      expect(authorizations).toEqual([ACCESS_TOKEN, ROTATED_TOKEN])
+      expectNoSecrets(`${text}\n${logs.join('\n')}`)
+    } finally {
+      console.log = original
+      calls.restore()
+    }
+  })
+
   it('does not refresh a token after a bare GoPlus 403', async () => {
     let tokenPosts = 0
     let addressCalls = 0
@@ -1449,7 +1671,7 @@ describe('GoPlus auth', () => {
         return { code: 1, result: { access_token: token, expires_in: 7200 } }
       }
       if (!url.includes('/address_security/')) return undefined
-      if (headerValue(init, 'Authorization') !== `Bearer ${ACCESS_TOKEN}`) return { code: 1, result: {} }
+      if (headerValue(init, 'Authorization') !== ACCESS_TOKEN) return { code: 1, result: {} }
       if (!held) {
         held = true
         await late

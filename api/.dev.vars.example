@@ -25,7 +25,7 @@ TRACE_RPC_URL_97=
 LLM_API_KEY=
 
 # Optional GoPlus Security API credentials. Both must be set, or neither.
-# When both are set, the Worker fetches an access token and sends Authorization: Bearer <token>.
+# When both are set, the Worker fetches an access token and sends Authorization: <token> (no Bearer prefix).
 # A failed token call falls back to an unauthenticated GoPlus request and backs off.
 # The token is cached in KV. The key, secret, and token are never logged.
 # Leave both empty to call GoPlus without authentication.

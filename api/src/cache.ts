@@ -18,3 +18,12 @@ export async function cachePut(kv: KvStore, key: string, value: string, ttl?: nu
     return false
   }
 }
+
+/** A missed delete leaves a rejected token for the next check to drop again. */
+export async function cacheDelete(kv: KvStore, key: string): Promise<void> {
+  try {
+    await kv.delete(key)
+  } catch {
+    // The check still finishes. The next 4012 deletes the token again.
+  }
+}
