@@ -6,9 +6,9 @@ import type { AppEnv, ChainId, Reason } from './types'
 
 const SCAM_URL = 'https://raw.githubusercontent.com/scamsniffer/scam-database/main/blacklist/address.json'
 const TOKEN_TTL = 3_600
-/** A GoPlus body that names the token or address. */
-export const GOPLUS_RECORD_TTL = 3_600
-/** Empty GoPlus body, or a token GoPlus has not indexed. Short so a new token is not "clean" for an hour. */
+/** A GoPlus body that names the token or address. Security flags change slowly. */
+export const GOPLUS_RECORD_TTL = 21_600
+/** Empty GoPlus body, or a token GoPlus has not indexed. Short so a new token is not "clean" for hours. */
 export const GOPLUS_EMPTY_TTL = 90
 /**
  * GoPlus from a Worker often takes longer than 4s. 8s still finishes inside

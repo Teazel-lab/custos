@@ -3,13 +3,20 @@ import { parseTx, runCheck } from '../src/check'
 import {
   fetchGoPlus,
   GOPLUS_CREDENTIAL_BACKOFF_SECONDS,
+  GOPLUS_RATE_LIMIT_DELAY_MAX_MS,
+  GOPLUS_RATE_LIMIT_DELAY_MIN_MS,
+  GOPLUS_RATE_LIMIT_KEY,
+  GOPLUS_RATE_LIMIT_SECONDS,
   GOPLUS_TOKEN_BACKOFF_SECONDS,
   GOPLUS_TOKEN_DEFAULT_TTL,
   GOPLUS_TOKEN_MAX_TTL,
   GOPLUS_TOKEN_SKEW_SECONDS,
   GOPLUS_TOKEN_URL,
+  goplusRateLimitDelayMs,
   goplusTokenTtl,
+  isCode,
   PROVIDER_USER_AGENT,
+  ProviderError,
   providerDetail,
   signGoPlus,
 } from '../src/goplus'
@@ -1015,7 +1022,7 @@ describe('review regressions', () => {
     )
     try {
       expect(GOPLUS_TIMEOUT_MS).toBe(8_000)
-      expect(GOPLUS_RECORD_TTL).toBe(3_600)
+      expect(GOPLUS_RECORD_TTL).toBe(21_600)
       const approval = encode('095ea7b3', [BigInt(SPENDER), 1n])
       const first = await post(env, tx(approval, 56))
       const firstBody = await first.json() as CheckBody
@@ -1497,7 +1504,8 @@ describe('GoPlus auth', () => {
       expect(body.complete).toBe(false)
       expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus HTTP 500')
       expect(dataCalls).toBe(2)
-      expect([...env.CACHE.expirations.keys()].some((key) => key.endsWith(':noauth'))).toBe(false)
+      const marker = [...env.CACHE.expirations.entries()].find(([key]) => key.endsWith(':noauth'))
+      expect(marker?.[1]).toBe(GOPLUS_TOKEN_BACKOFF_SECONDS)
       expectNoSecrets(`${text}\n${logs.join('\n')}`)
     } finally {
       console.log = original
@@ -1692,6 +1700,190 @@ describe('GoPlus auth', () => {
     } finally {
       calls.restore()
     }
+  })
+
+  it('retries a GoPlus 4029 once, then stops and cools down', async () => {
+    const env = testEnv()
+    let dataCalls = 0
+    const logs: string[] = []
+    const original = console.log
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '))
+    }
+    const calls = installFetch(undefined, (url) => {
+      if (!url.includes('/address_security/')) return undefined
+      dataCalls += 1
+      return { code: 4029, message: 'too many requests' }
+    })
+    try {
+      const started = Date.now()
+      const first = await post(env, tx('0x', 56))
+      const firstText = await first.text()
+      const firstBody = JSON.parse(firstText) as CheckBody
+      expect(Date.now() - started).toBeGreaterThanOrEqual(GOPLUS_RATE_LIMIT_DELAY_MIN_MS)
+      expect(dataCalls).toBe(2)
+      expect(firstBody.complete).toBe(false)
+      expect(firstBody.verdict).toBe('warn')
+      expect(firstBody.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus code 4029')
+      expect(env.CACHE.expirations.get(GOPLUS_RATE_LIMIT_KEY)).toBe(GOPLUS_RATE_LIMIT_SECONDS)
+      const during = dataCalls
+      const second = await post(env, tx('0x', 56, { to: SPENDER }))
+      const secondText = await second.text()
+      const secondBody = JSON.parse(secondText) as CheckBody
+      expect(dataCalls).toBe(during)
+      expect(secondBody.complete).toBe(false)
+      expect(secondBody.verdict).toBe('warn')
+      expect(secondBody.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus rate limited')
+      expectNoSecrets(`${firstText}\n${secondText}\n${logs.join('\n')}`)
+    } finally {
+      console.log = original
+      calls.restore()
+    }
+  })
+
+  it('retries HTTP 429 once and keeps the result when the retry succeeds', async () => {
+    const env = testEnv()
+    let dataCalls = 0
+    const calls = installFetch(undefined, (url) => {
+      if (!url.includes('/address_security/')) return undefined
+      dataCalls += 1
+      if (dataCalls === 1) return new Response('slow down', { status: 429 })
+      return { code: 1, result: { phishing_activities: '0' } }
+    })
+    try {
+      const response = await post(env, tx('0x', 56))
+      const body = await response.json() as CheckBody
+      expect(body.complete).toBe(true)
+      expect(body.reasons.map((reason) => reason.code)).not.toContain('provider_failed')
+      expect(dataCalls).toBe(2)
+      expect(env.CACHE.expirations.has(GOPLUS_RATE_LIMIT_KEY)).toBe(false)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('does not retry a 4029 after the check deadline has already fired', async () => {
+    let dataCalls = 0
+    const calls = installFetch(undefined, (url) => {
+      if (!url.includes('/address_security/')) return undefined
+      dataCalls += 1
+      return { code: 4029, message: 'too many requests' }
+    })
+    try {
+      await expect(fetchGoPlus(
+        testEnv(),
+        `https://api.gopluslabs.io/api/v1/address_security/${TOKEN}?chain_id=56`,
+        AbortSignal.abort(),
+      )).rejects.toThrow()
+      expect(dataCalls).toBe(1)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('does not drop the header when the refreshed token gets 4022', async () => {
+    const env = testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET })
+    let tokenPosts = 0
+    const authorizations: Array<string | undefined> = []
+    const logs: string[] = []
+    const original = console.log
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(' '))
+    }
+    const calls = installFetch(undefined, (url, init) => {
+      if (url === GOPLUS_TOKEN_URL) {
+        tokenPosts += 1
+        const token = tokenPosts === 1 ? ACCESS_TOKEN : ROTATED_TOKEN
+        return { code: 1, result: { access_token: token, expires_in: 7200 } }
+      }
+      if (!url.includes('/address_security/')) return undefined
+      const authorization = headerValue(init, 'Authorization')
+      authorizations.push(authorization)
+      if (authorization === ACCESS_TOKEN) return { code: 4012, message: 'signature verification failure' }
+      return { code: 4022, message: 'invalid token' }
+    })
+    try {
+      const response = await post(env, tx('0x', 56))
+      const text = await response.text()
+      const body = JSON.parse(text) as CheckBody
+      expect(body.complete).toBe(false)
+      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus code 4022')
+      expect(authorizations).toEqual([ACCESS_TOKEN, ROTATED_TOKEN])
+      expect([...env.CACHE.expirations.keys()].some((key) => key.endsWith(':noauth'))).toBe(false)
+      expectNoSecrets(`${text}\n${logs.join('\n')}`)
+    } finally {
+      console.log = original
+      calls.restore()
+    }
+  })
+
+  it('does not drop the header when the refreshed token gets HTTP 401', async () => {
+    const env = testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET })
+    let tokenPosts = 0
+    const authorizations: Array<string | undefined> = []
+    const calls = installFetch(undefined, (url, init) => {
+      if (url === GOPLUS_TOKEN_URL) {
+        tokenPosts += 1
+        const token = tokenPosts === 1 ? ACCESS_TOKEN : ROTATED_TOKEN
+        return { code: 1, result: { access_token: token, expires_in: 7200 } }
+      }
+      if (!url.includes('/address_security/')) return undefined
+      const authorization = headerValue(init, 'Authorization')
+      authorizations.push(authorization)
+      if (authorization === ACCESS_TOKEN) return { code: 4012, message: 'signature verification failure' }
+      return new Response('unauthorized', { status: 401 })
+    })
+    try {
+      const response = await post(env, tx('0x', 56))
+      const body = await response.json() as CheckBody
+      expect(body.complete).toBe(false)
+      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus HTTP 401')
+      expect(tokenPosts).toBe(2)
+      expect(authorizations).toEqual([ACCESS_TOKEN, ROTATED_TOKEN])
+      expect([...env.CACHE.expirations.keys()].some((key) => key.endsWith(':noauth'))).toBe(false)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('sends the token again on the first call after the noauth marker expires', async () => {
+    const env = testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET })
+    let tokenPosts = 0
+    const authorizations: Array<string | undefined> = []
+    const calls = installFetch(undefined, (url, init) => {
+      if (url === GOPLUS_TOKEN_URL) {
+        tokenPosts += 1
+        return { code: 1, result: { access_token: ACCESS_TOKEN, expires_in: 7200 } }
+      }
+      if (!url.includes('/address_security/')) return undefined
+      const authorization = headerValue(init, 'Authorization')
+      authorizations.push(authorization)
+      if (authorization && tokenPosts < 3) return { code: 4012, message: 'signature verification failure' }
+      return { code: 1, result: { phishing_activities: '0' } }
+    })
+    try {
+      await post(env, tx('0x', 56))
+      expect(authorizations).toEqual([ACCESS_TOKEN, undefined])
+      const marker = [...env.CACHE.expirations.keys()].find((key) => key.endsWith(':noauth'))
+      expect(marker).toBeTruthy()
+      await env.CACHE.delete(marker ?? '')
+      await post(env, tx('0x', 56, { to: SPENDER }))
+      expect(tokenPosts).toBe(3)
+      expect(authorizations[2]).toBe(ACCESS_TOKEN)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('keeps the rate-limit pause inside 300 to 700ms and reads 4029 from the error code', () => {
+    for (let i = 0; i < 20; i += 1) {
+      const delay = goplusRateLimitDelayMs()
+      expect(delay).toBeGreaterThanOrEqual(GOPLUS_RATE_LIMIT_DELAY_MIN_MS)
+      expect(delay).toBeLessThanOrEqual(GOPLUS_RATE_LIMIT_DELAY_MAX_MS)
+    }
+    const err = new ProviderError('GoPlus code 4029', undefined, false, 4029)
+    expect(isCode(err.code, 4029)).toBe(true)
+    expect(isCode(new ProviderError('GoPlus HTTP 401').code, 4012)).toBe(false)
   })
 
   it('remembers a ScamSniffer timeout for the next check', async () => {
