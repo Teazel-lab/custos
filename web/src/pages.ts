@@ -23,6 +23,8 @@ import {
 } from './config'
 import { el, externalLink, field, input, shortAddress } from './dom'
 import { routeLink } from './router'
+import owlJpg from './assets/owl-hero.jpg'
+import owlWebp from './assets/owl-hero.webp'
 import {
   browserWallet,
   connectWallet,
@@ -41,26 +43,48 @@ const CURL = `curl -s -X POST https://api.custosprotocol.com/check \\
 
 export function renderLanding(root: HTMLElement): () => void {
   const contracts = contractList()
+  const headline = el('h1')
+  headline.append(document.createTextNode('Check before'), el('span', { class: 'grad', text: 'Your Agent Signs' }))
+  const primary = routeLink('/scanner', 'Run a free check', 'button')
+  primary.append(arrowIcon())
+  const secondary = routeLink('/#how', 'See how it works', 'play-link')
+  secondary.prepend(playButton())
+  const scroll = routeLink('/#how', 'Scroll to explore', 'scroll-hint')
+  scroll.prepend(el('span', { class: 'mouse', attrs: { 'aria-hidden': 'true' } }))
   root.append(
     el('section', {
-      class: 'hero',
+      class: 'stage',
+      attrs: { 'aria-label': 'Introduction' },
       children: [
-        el('p', { class: 'eyebrow', text: 'Binance Agent ID Hackathon' }),
-        el('h1', { text: 'Check the transaction before the agent signs it.' }),
-        el('p', {
-          class: 'lede',
-          text: 'Custos is a pre-sign security check for AI agents on BNB Chain. The agent calls /check, gets a verdict, and the person still confirms the transaction in their own wallet.',
-        }),
+        heroPhoto(),
+        el('div', { class: 'stage-shade', attrs: { 'aria-hidden': 'true' } }),
         el('div', {
-          class: 'row',
+          class: 'stage-copy',
           children: [
-            routeLink('/scanner', 'Scan a transaction', 'button'),
-            routeLink('/activate', 'Activate a wallet', 'button ghost'),
-            externalLink(GITHUB_URL, 'GitHub', 'button ghost'),
+            el('article', {
+              class: 'hero-card',
+              children: [
+                el('p', { class: 'eyebrow-line', children: [el('span', { text: 'Pre-sign security for AI agents' })] }),
+                headline,
+                el('p', {
+                  class: 'lede',
+                  text: 'Custos simulates every transaction your AI agent is about to sign on BNB Chain and flags drainers, unlimited approvals and scam addresses before any funds move.',
+                }),
+                el('div', { class: 'hero-actions', children: [primary, secondary] }),
+                featureRow(),
+              ],
+            }),
           ],
         }),
+        owlCallout(),
+        heroRail(),
+        scroll,
+        el('p', { class: 'tagline', text: 'Simulate / Verify / Protect' }),
       ],
     }),
+    el('div', {
+      class: 'sheet',
+      children: [
     el('section', {
       class: 'grid-3',
       children: [
@@ -71,6 +95,7 @@ export function renderLanding(root: HTMLElement): () => void {
     }),
     el('section', {
       class: 'panel',
+      attrs: { id: 'how' },
       children: [
         el('h2', { text: 'How it works' }),
         el('ol', {
@@ -96,10 +121,12 @@ export function renderLanding(root: HTMLElement): () => void {
         }),
         el('div', {
           class: 'panel',
+          attrs: { id: 'docs' },
           children: [
-            el('h2', { text: 'API' }),
+            el('h2', { text: 'Docs' }),
             el('p', { text: 'POST /check with chainId, from, to, data, and value. GET /health returns { "ok": true }. GET /report/<address>?chainId= returns registry counts.' }),
             el('pre', { text: CURL }),
+            externalLink(GITHUB_URL, 'GitHub', 'button ghost'),
           ],
         }),
       ],
@@ -110,6 +137,8 @@ export function renderLanding(root: HTMLElement): () => void {
         el('h2', { text: 'Contracts' }),
         el('p', { text: 'Testnet (chain 97) is live. Mainnet hub and registry are not deployed yet. Filling those two addresses later is a one-line change in web/src/config.ts.' }),
         contracts,
+      ],
+    }),
       ],
     }),
   )
@@ -187,7 +216,7 @@ export function renderScanner(root: HTMLElement): () => void {
     el('section', {
       class: 'page-head',
       children: [
-        el('h1', { text: 'Scanner' }),
+        el('h1', { text: 'Check' }),
         el('p', { text: 'POST a transaction to the live /check API, and read the community registry for the target address. This page does not connect a wallet and does not send a transaction.' }),
       ],
     }),
@@ -312,7 +341,7 @@ function renderWalletPage(root: HTMLElement, mode: 'activate' | 'report'): () =>
     el('section', {
       class: 'page-head',
       children: [
-        el('h1', { text: mode === 'activate' ? 'Activate' : 'Report' }),
+        el('h1', { text: mode === 'activate' ? 'Agents' : 'Report' }),
         el('p', {
           text: mode === 'activate'
             ? 'Connect the wallet you already use in this browser. Custos reads your Agent ID, shows whether the hub marks the wallet protected, and sends activate only when you press the button.'
@@ -567,6 +596,111 @@ function contractList(): HTMLElement {
     }))
   }
   return list
+}
+
+function heroPhoto(): HTMLElement {
+  return el('picture', {
+    class: 'stage-media',
+    children: [
+      el('source', { attrs: { srcset: owlWebp, type: 'image/webp' } }),
+      el('img', {
+        attrs: {
+          src: owlJpg,
+          alt: 'A blue owl perched on a snowy branch, watching from the right of a dark forest.',
+          width: '1280',
+          height: '720',
+          decoding: 'async',
+          fetchpriority: 'high',
+        },
+      }),
+    ],
+  })
+}
+
+function playButton(): HTMLElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.setAttribute('viewBox', '0 0 24 24')
+  svg.setAttribute('aria-hidden', 'true')
+  svg.setAttribute('fill', 'currentColor')
+  const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+  shape.setAttribute('d', 'M9 7.2v9.6l8.2-4.8L9 7.2z')
+  svg.append(shape)
+  return el('span', { class: 'play-circle', attrs: { 'aria-hidden': 'true' }, children: [svg] })
+}
+
+function arrowIcon(): SVGSVGElement {
+  return icon([['path', { d: 'M5 12h14M13 6l6 6-6 6' }]])
+}
+
+function featureRow(): HTMLElement {
+  const items: Array<[string, string, Array<[string, Record<string, string>]>]> = [
+    ['Tx Simulation', 'Trace before sign', [['path', { d: 'M4 12h3l2.2-5 4.2 10L16 12h4' }]]],
+    ['Agent ID', 'Binance .ai holders', [['circle', { cx: '12', cy: '8', r: '3' }], ['path', { d: 'M6.5 19c1.2-2.6 3-3.8 5.5-3.8s4.3 1.2 5.5 3.8' }]]],
+    ['Scam Registry', 'On-chain reports', [['path', { d: 'M12 3.5l6.5 2.5v5.2c0 4.2-2.7 7-6.5 8.8-3.8-1.8-6.5-4.6-6.5-8.8V6z' }]]],
+    ['Free', 'During hackathon', [['path', { d: 'M12 4v16M8 8h5.2a2.8 2.8 0 0 1 0 5.6H8.6' }]]],
+  ]
+  return el('ul', {
+    class: 'feature-row',
+    children: items.map(([title, subtitle, shapes]) => el('li', {
+      children: [
+        el('span', { class: 'chip-icon', children: [icon(shapes)] }),
+        el('span', { children: [el('strong', { text: title }), el('small', { text: subtitle })] }),
+      ],
+    })),
+  })
+}
+
+function owlCallout(): HTMLElement {
+  return el('aside', {
+    class: 'owl-note',
+    children: [
+      el('span', {
+        class: 'chip-icon',
+        children: [icon([['circle', { cx: '12', cy: '12', r: '3' }], ['path', { d: 'M3 12s3.2-5.5 9-5.5S21 12 21 12s-3.2 5.5-9 5.5S3 12 3 12z' }]])],
+      }),
+      el('span', {
+        children: [
+          el('strong', { text: 'Watching every tx' }),
+          el('small', { text: "Before it's signed" }),
+        ],
+      }),
+    ],
+  })
+}
+
+function heroRail(): HTMLElement {
+  const links: Array<[string, string, Array<[string, Record<string, string>]>]> = [
+    ['/scanner', 'Run a free check', [['circle', { cx: '11', cy: '11', r: '5.5' }], ['path', { d: 'M15.5 15.5L20 20' }]]],
+    ['/#docs', 'Read the docs', [['path', { d: 'M6 5.5h8.5A3.5 3.5 0 0 1 18 9v9.5H8.2A2.2 2.2 0 0 0 6 20.7z' }], ['path', { d: 'M6 5.5v15.2' }]]],
+    ['/report', 'File a report', [['path', { d: 'M7 4.5h8l2 2V19.5H7z' }], ['path', { d: 'M9.5 11h5M9.5 14.5h5' }]]],
+  ]
+  return el('nav', {
+    class: 'rail',
+    attrs: { 'aria-label': 'Shortcuts' },
+    children: links.map(([href, label, shapes]) => {
+      const link = routeLink(href, '', 'rail-btn')
+      link.setAttribute('aria-label', label)
+      link.append(icon(shapes))
+      return link
+    }),
+  })
+}
+
+function icon(shapes: Array<[string, Record<string, string>]>): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.setAttribute('viewBox', '0 0 24 24')
+  svg.setAttribute('aria-hidden', 'true')
+  svg.setAttribute('fill', 'none')
+  svg.setAttribute('stroke', 'currentColor')
+  svg.setAttribute('stroke-width', '1.7')
+  svg.setAttribute('stroke-linecap', 'round')
+  svg.setAttribute('stroke-linejoin', 'round')
+  for (const [tag, attrs] of shapes) {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag)
+    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value)
+    svg.append(node)
+  }
+  return svg
 }
 
 function verdictCard(tone: string, title: string, body: string): HTMLElement {

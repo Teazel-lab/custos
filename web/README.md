@@ -4,9 +4,9 @@ Static site for [custosprotocol.com](https://custosprotocol.com). It talks to th
 
 Pages:
 
-- `/` — what Custos is, how a check works, a curl example, contract links
-- `/activate` — connect an injected wallet, read Agent ID, read `isProtected`, call `CustosHub.activate`
-- `/scanner` — `POST /check` and `GET /report/<address>`
+- `/` — hero, how a check works, a curl example, contract links
+- `/activate` — Agents: connect an injected wallet, read Agent ID, read `isProtected`, call `CustosHub.activate`
+- `/scanner` — Check: `POST /check` and `GET /report/<address>`
 - `/report` — Agent ID holders call `CustosRegistry.report`
 
 Wallet access is the browser extension already installed (MetaMask, Binance Wallet, or any other EIP-6963 / `window.ethereum` provider). There is no QR-code login and no seed phrase field. A transaction is sent only after the matching button click, and the wallet still has to confirm it.
@@ -37,7 +37,7 @@ Cloudflare Workers static assets, from `web/` after `npm run build`:
 npx wrangler deploy
 ```
 
-`wrangler.jsonc` serves `dist/` and falls unknown paths back to `index.html`, so `/activate` and the other routes keep working on refresh. `public/_headers` sets a content security policy, `nosniff`, and `frame-ancestors: none`. Fonts are bundled with the site.
+`wrangler.jsonc` serves `dist/` and falls unknown paths back to `index.html`, so `/activate` and the other routes keep working on refresh. `public/_headers` sets a content security policy, `nosniff`, and `frame-ancestors: none`. Fonts and the hero image are bundled with the site. Plus Jakarta Sans comes from `@fontsource`. The owl is `src/assets/owl-hero.webp` with a JPEG fallback.
 
 Cloudflare Pages, same build output:
 
