@@ -1947,6 +1947,72 @@ describe('GoPlus auth', () => {
     }
   })
 
+  it('keeps a honeypot flag when cannot_sell_all is missing or empty', async () => {
+    const env = testEnv()
+    let tokenCalls = 0
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        return undefined
+      },
+      (url) => {
+        if (url.includes('/token_security/')) {
+          tokenCalls += 1
+          if (url.includes(TOKEN)) return { code: 1, result: { [TOKEN]: { is_honeypot: '1' } } }
+          return { code: 1, result: { [SPENDER]: { is_honeypot: '1', cannot_sell_all: '' } } }
+        }
+        if (url.includes('/address_security/')) return { code: 1, result: {} }
+        return undefined
+      },
+    )
+    try {
+      const approval = encode('095ea7b3', [BigInt(USER), 1n])
+      const missing = await post(env, tx(approval, 56, { to: TOKEN }))
+      const missingBody = await missing.json() as CheckBody
+      expect(missingBody.verdict).toBe('danger')
+      expect(missingBody.reasons.map((reason) => reason.code)).toContain('honeypot')
+      expect(missingBody.reasons.map((reason) => reason.code)).toContain('unknown_token')
+      expect(env.CACHE.expirations.get(`goplus:token:56:${TOKEN}`)).toBe(GOPLUS_EMPTY_TTL)
+      const empty = await post(env, tx(approval, 56, { to: SPENDER }))
+      const emptyBody = await empty.json() as CheckBody
+      expect(emptyBody.verdict).toBe('danger')
+      expect(emptyBody.reasons.map((reason) => reason.code)).toContain('honeypot')
+      expect(env.CACHE.expirations.get(`goplus:token:56:${SPENDER}`)).toBe(GOPLUS_EMPTY_TTL)
+      const again = await post(env, tx(approval, 56, { to: TOKEN, from: SPENDER }))
+      const againBody = await again.json() as CheckBody
+      expect(againBody.reasons.map((reason) => reason.code)).toContain('honeypot')
+      expect(tokenCalls).toBe(2)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('keeps a cannot_sell flag when is_honeypot is missing', async () => {
+    const env = testEnv()
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        return undefined
+      },
+      (url) => {
+        if (url.includes('/token_security/')) return { code: 1, result: { [TOKEN]: { cannot_sell_all: '1' } } }
+        if (url.includes('/address_security/')) return { code: 1, result: {} }
+        return undefined
+      },
+    )
+    try {
+      const response = await post(env, tx(encode('095ea7b3', [BigInt(SPENDER), 1n]), 56))
+      const body = await response.json() as CheckBody
+      expect(body.verdict).toBe('danger')
+      const codes = body.reasons.map((reason) => reason.code)
+      expect(codes).toContain('cannot_sell')
+      expect(codes).not.toContain('honeypot')
+      expect(env.CACHE.expirations.get(`goplus:token:56:${TOKEN}`)).toBe(GOPLUS_EMPTY_TTL)
+    } finally {
+      calls.restore()
+    }
+  })
+
   it('retries only the first parallel 4029 and writes the cooldown once', async () => {
     clearGoPlusRateLimitForTests()
     const env = testEnv()

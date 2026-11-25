@@ -352,7 +352,7 @@ async function requestGoPlus(
   } catch (err) {
     if (!(err instanceof ProviderError) || !isRateLimit(err) || signal?.aborted) throw err
     // The first 4029 in this isolate owns the single retry. Everyone else stops.
-    if (!armRateLimit(env)) throw new ProviderError('GoPlus rate limited')
+    if (!(await armRateLimit(env))) throw new ProviderError('GoPlus rate limited')
     await rateLimitPause(signal)
     return goplusOnce(env, url, authorization, signal, refreshed)
   }
@@ -363,11 +363,11 @@ function rateLimitActive(): boolean {
 }
 
 /** True the first time this window is opened. Later calls in the window do not write KV again. */
-function armRateLimit(env: AppEnv): boolean {
+async function armRateLimit(env: AppEnv): Promise<boolean> {
   const now = Date.now()
   if (rateLimitedUntil > now) return false
   rateLimitedUntil = now + GOPLUS_RATE_LIMIT_SECONDS * 1000
-  void cachePut(env.CACHE, GOPLUS_RATE_LIMIT_KEY, String(rateLimitedUntil), GOPLUS_RATE_LIMIT_SECONDS)
+  await cachePut(env.CACHE, GOPLUS_RATE_LIMIT_KEY, String(rateLimitedUntil), GOPLUS_RATE_LIMIT_SECONDS)
   return true
 }
 

@@ -325,9 +325,9 @@ async function loadGoPlusTokenRecords(
       absent.add(token)
       continue
     }
-    const stored = tokenSecurity(JSON.parse(hit) as Record<string, string>)
-    if (stored) records.set(token, stored)
-    else absent.add(token)
+    const stored = JSON.parse(hit) as Record<string, string>
+    records.set(token, stored)
+    if (!tokenComplete(stored)) absent.add(token)
   }
   if (missing.length === 0) return { records, absent }
   const body = await fetchGoPlus(
@@ -337,15 +337,21 @@ async function loadGoPlusTokenRecords(
   )
   const result = (body.result ?? {}) as Record<string, Record<string, string>>
   for (const token of missing) {
-    const record = tokenSecurity(lookup(result, token))
+    const record = lookup(result, token)
+    if (!record) {
+      await cachePut(env.CACHE, `goplus:token:${chainId}:${token}`, 'none', GOPLUS_EMPTY_TTL)
+      absent.add(token)
+      continue
+    }
+    const complete = tokenComplete(record)
     await cachePut(
       env.CACHE,
       `goplus:token:${chainId}:${token}`,
-      record ? JSON.stringify(record) : 'none',
-      record ? GOPLUS_RECORD_TTL : GOPLUS_EMPTY_TTL,
+      JSON.stringify(record),
+      complete ? GOPLUS_RECORD_TTL : GOPLUS_EMPTY_TTL,
     )
-    if (record) records.set(token, record)
-    else absent.add(token)
+    records.set(token, record)
+    if (!complete) absent.add(token)
   }
   return { records, absent }
 }
@@ -361,14 +367,13 @@ function goplusAddressTtl(record: Record<string, string>): number {
   return GOPLUS_ADDRESS_CLEAN_TTL
 }
 
-/** A token answer we can trust for hours. Anything else stays unknown. */
-function tokenSecurity(record: Record<string, string> | null): Record<string, string> | null {
-  if (!record) return null
+/** Both answers are present, so the record can be cached for hours and is not unknown. */
+function tokenComplete(record: Record<string, string> | null): boolean {
+  if (!record) return false
   const honeypot = record.is_honeypot
-  if (honeypot !== '0' && honeypot !== '1') return null
+  if (honeypot !== '0' && honeypot !== '1') return false
   const sell = record.cannot_sell_all
-  if (typeof sell !== 'string' || sell.length === 0) return null
-  return record
+  return typeof sell === 'string' && sell.length > 0
 }
 
 function lookup(result: Record<string, Record<string, string>>, address: string): Record<string, string> | null {
