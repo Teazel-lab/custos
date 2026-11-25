@@ -6,7 +6,7 @@ const PUBLIC_RPC: Record<ChainId, string> = {
   97: 'https://bsc-testnet.publicnode.com',
 }
 
-const ALLOWED = new Set(['debug_traceCall', 'eth_call', 'eth_estimateGas', 'eth_getCode'])
+const ALLOWED = new Set(['debug_traceCall', 'eth_simulateV1', 'eth_call', 'eth_estimateGas', 'eth_getCode'])
 
 export class RpcError extends Error {
   readonly data: unknown

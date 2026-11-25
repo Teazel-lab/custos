@@ -1,6 +1,6 @@
 declare global {
   interface Env {
-    /** Plain JSON-RPC for eth_call, eth_estimateGas, eth_getCode, and registry reads. */
+    /** Plain JSON-RPC for eth_simulateV1, eth_call, eth_estimateGas, eth_getCode, and registry reads. */
     RPC_URL?: string
     /** Optional debug_traceCall endpoint. Any provider; swap the URL to change it. */
     TRACE_RPC_URL?: string

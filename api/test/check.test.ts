@@ -9,6 +9,9 @@ const USER = '0x0000000000000000000000000000000000000001'
 const SPENDER = '0x0000000000000000000000000000000000000002'
 const TOKEN = '0x0000000000000000000000000000000000000003'
 const APPROVAL_TOPIC = '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925'
+const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
+const APPROVAL_FOR_ALL_TOPIC = '0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31'
+const NATIVE_LOG = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
 const MAX = (1n << 256n) - 1n
 
 interface RpcRequest {
@@ -202,6 +205,119 @@ describe('POST /check', () => {
       expect(methods).toContain('eth_call')
       expect(methods).toContain('eth_estimateGas')
       expect(body.reasons.map((reason) => reason.code)).toEqual(expect.arrayContaining(['trace_unavailable', 'unlimited_approval']))
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('decodes eth_simulateV1 logs when no trace RPC is configured', async () => {
+    let params: unknown[] | undefined
+    const calls = installFetch((body) => {
+      if (body.method !== 'eth_simulateV1') return undefined
+      params = body.params
+      return rpcOk([
+        {
+          calls: [
+            {
+              status: '0x1',
+              returnData: '0x',
+              logs: [
+                {
+                  address: TOKEN,
+                  topics: [TRANSFER_TOPIC, word(BigInt(USER)), word(BigInt(SPENDER))],
+                  data: word(5n),
+                },
+                {
+                  address: TOKEN,
+                  topics: [APPROVAL_TOPIC, word(BigInt(USER)), word(BigInt(SPENDER))],
+                  data: word(MAX),
+                },
+                {
+                  address: TOKEN,
+                  topics: [APPROVAL_FOR_ALL_TOPIC, word(BigInt(USER)), word(BigInt(SPENDER))],
+                  data: word(1n),
+                },
+                {
+                  address: NATIVE_LOG,
+                  topics: [TRANSFER_TOPIC, word(BigInt(USER)), word(BigInt(SPENDER))],
+                  data: word(1n),
+                },
+              ],
+            },
+          ],
+        },
+      ])
+    })
+    try {
+      const response = await post(testEnv(), tx())
+      const body = await response.json() as CheckBody
+      const sent = params?.[0] as { blockStateCalls: { calls: { from: string }[] }[]; traceTransfers: boolean; validation: boolean }
+      expect(sent.traceTransfers).toBe(true)
+      expect(sent.validation).toBe(false)
+      expect(sent.blockStateCalls[0]?.calls[0]?.from).toBe(USER)
+      expect(params?.[1]).toBe('latest')
+      expect(body.simulation.mode).toBe('simulate')
+      expect(body.simulation.success).toBe(true)
+      expect(body.simulation.assetChanges).toEqual([
+        { asset: TOKEN, from: USER, to: SPENDER, amount: '5' },
+        { asset: 'native', from: USER, to: SPENDER, amount: '1' },
+      ])
+      expect(body.simulation.approvals.map((approval) => approval.unlimited)).toEqual([true, true])
+      expect(body.reasons.map((reason) => reason.code)).toEqual(expect.arrayContaining(['unlimited_approval', 'approval_for_all']))
+      expect(calls.some((url) => url.startsWith('https://trace.test'))).toBe(false)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('keeps a reverted eth_simulateV1 result instead of calling eth_call', async () => {
+    const methods: string[] = []
+    const calls = installFetch((body) => {
+      methods.push(body.method)
+      if (body.method !== 'eth_simulateV1') return undefined
+      return rpcOk([
+        {
+          calls: [
+            {
+              status: '0x0',
+              returnData: errorString('nope'),
+              error: { message: 'execution reverted', data: errorString('nope') },
+              logs: [],
+            },
+          ],
+        },
+      ])
+    })
+    try {
+      const response = await post(testEnv(), tx())
+      const body = await response.json() as CheckBody
+      expect(body.simulation.mode).toBe('simulate')
+      expect(body.simulation.success).toBe(false)
+      expect(body.simulation.revertReason).toBe('nope')
+      expect(body.verdict).toBe('warn')
+      expect(methods).toContain('eth_simulateV1')
+      expect(methods).not.toContain('eth_estimateGas')
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('uses eth_simulateV1 after a trace error, and eth_call only if that errors too', async () => {
+    const calls = installFetch((body) => {
+      if (body.method === 'debug_traceCall') {
+        return { jsonrpc: '2.0', id: 1, error: { code: -32601, message: 'method not found' } }
+      }
+      if (body.method === 'eth_simulateV1') {
+        return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+      }
+      return undefined
+    })
+    try {
+      const response = await post(testEnv({ TRACE_RPC_URL: 'https://trace.test' }), tx())
+      const body = await response.json() as CheckBody
+      expect(body.simulation.mode).toBe('simulate')
+      expect(body.simulation.success).toBe(true)
+      expect(body.reasons.map((reason) => reason.code)).not.toContain('trace_unavailable')
     } finally {
       calls.restore()
     }
@@ -459,6 +575,12 @@ interface CheckBody {
   verdict: string
   score: number
   reasons: { code: string; severity: string; message: string }[]
-  simulation: { mode: string; success: boolean; revertReason: string | null; approvals: { unlimited: boolean }[]; assetChanges: unknown[] }
+  simulation: {
+    mode: string
+    success: boolean
+    revertReason: string | null
+    approvals: { unlimited: boolean }[]
+    assetChanges: { asset: string; from: string; to: string; amount: string }[]
+  }
   explanation: string
 }

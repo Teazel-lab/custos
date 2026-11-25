@@ -16,7 +16,7 @@ export interface AppEnv {
 export type ChainId = 56 | 97
 export type Verdict = 'safe' | 'warn' | 'danger'
 export type Severity = 'info' | 'warn' | 'danger'
-export type SimulationMode = 'trace' | 'call'
+export type SimulationMode = 'trace' | 'simulate' | 'call'
 
 export interface Reason {
   code: string

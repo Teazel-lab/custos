@@ -1,4 +1,4 @@
-import { MAX_UINT, dataWord, isAddress, topicAddress } from './abi'
+import { MAX_UINT, dataWord, decodeRevertData, isAddress, topicAddress } from './abi'
 import {
   APPROVAL,
   APPROVAL_FOR_ALL,
@@ -17,6 +17,8 @@ import type { DecodedCall } from './calldata'
 const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 const APPROVAL_TOPIC = '0x8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925'
 const APPROVAL_FOR_ALL_TOPIC = '0x17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31'
+/** Address geth uses for synthetic native-transfer logs when traceTransfers is set. */
+const NATIVE_LOG = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
 
 interface TraceLog {
   address?: string
@@ -49,10 +51,16 @@ export async function simulate(env: AppEnv, tx: Tx, decoded: DecodedCall): Promi
       traced.simulation.approvals = mergeApprovals(traced.simulation.approvals, decoded.approvals)
       return traced
     } catch {
-      return callFallback(env, tx, decoded, true)
+      // eth_simulateV1, then eth_call.
     }
   }
-  return callFallback(env, tx, decoded, false)
+  try {
+    const simulated = await withTimeout((signal) => ethSimulate(env, tx, signal), 6_000, 'simulate')
+    simulated.simulation.approvals = mergeApprovals(simulated.simulation.approvals, decoded.approvals)
+    return simulated
+  } catch {
+    return callFallback(env, tx, decoded, Boolean(traceUrl))
+  }
 }
 
 async function callFallback(
@@ -128,7 +136,72 @@ async function traceSimulation(
     signal,
   )
   if (!result || typeof result !== 'object') throw new Error('empty trace')
-  const acc = walk(result as TraceFrame)
+  return resultFromAcc(env, tx, walk(result as TraceFrame), 'trace', signal)
+}
+
+interface SimCall {
+  status?: string | number
+  returnData?: string
+  logs?: TraceLog[]
+  error?: { message?: string; data?: unknown }
+}
+
+async function ethSimulate(env: AppEnv, tx: Tx, signal: AbortSignal): Promise<SimulationResult> {
+  const result = await rpc(
+    plainRpc(env, tx.chainId),
+    'eth_simulateV1',
+    [
+      {
+        blockStateCalls: [{ calls: [txCall(tx)] }],
+        traceTransfers: true,
+        validation: false,
+      },
+      'latest',
+    ],
+    signal,
+  )
+  if (!Array.isArray(result)) throw new Error('empty simulate')
+  const calls = result.flatMap((block) => {
+    if (!block || typeof block !== 'object') return []
+    const list = (block as { calls?: SimCall[] }).calls
+    return Array.isArray(list) ? list : []
+  })
+  if (calls.length === 0) throw new Error('empty simulate')
+  const acc = emptyAcc()
+  for (const call of calls) {
+    if (call.error || statusReverted(call.status)) {
+      acc.reverted = true
+      if (!acc.revertReason) acc.revertReason = reasonFromSimCall(call)
+    }
+    for (const log of call.logs ?? []) decodeLog(log, acc)
+  }
+  return resultFromAcc(env, tx, acc, 'simulate', signal)
+}
+
+function statusReverted(status: string | number | undefined): boolean {
+  if (typeof status === 'number') return status === 0
+  if (typeof status !== 'string' || status.length === 0) return false
+  try {
+    return BigInt(status) === 0n
+  } catch {
+    return false
+  }
+}
+
+function reasonFromSimCall(call: SimCall): string {
+  const decoded = decodeRevertData(call.error?.data) ?? decodeRevertData(call.returnData)
+  if (decoded) return decoded
+  const message = call.error?.message?.replace(/^execution reverted:?\s*/i, '').trim()
+  return message || 'execution reverted'
+}
+
+async function resultFromAcc(
+  env: AppEnv,
+  tx: Tx,
+  acc: Acc,
+  mode: 'trace' | 'simulate',
+  signal: AbortSignal,
+): Promise<SimulationResult> {
   const reasons: Reason[] = []
   if (acc.reverted) {
     reasons.push({
@@ -140,7 +213,7 @@ async function traceSimulation(
   await flagCounterparties(env, tx, acc, reasons, signal)
   return {
     simulation: {
-      mode: 'trace',
+      mode,
       success: !acc.reverted,
       revertReason: acc.reverted ? (acc.revertReason ?? 'execution reverted') : null,
       assetChanges: acc.assets,
@@ -161,8 +234,8 @@ interface Acc {
   spenders: Set<string>
 }
 
-function walk(frame: TraceFrame): Acc {
-  const acc: Acc = {
+function emptyAcc(): Acc {
+  return {
     reverted: false,
     revertReason: null,
     assets: [],
@@ -170,6 +243,10 @@ function walk(frame: TraceFrame): Acc {
     tokens: new Set(),
     spenders: new Set(),
   }
+}
+
+function walk(frame: TraceFrame): Acc {
+  const acc = emptyAcc()
   visit(frame, acc)
   return acc
 }
@@ -205,13 +282,14 @@ function decodeLog(log: TraceLog, acc: Acc): void {
   if (topics[0] === TRANSFER) {
     const amount = topics.length >= 4 ? 1n : dataWord(log.data)
     if (amount === null) return
+    const native = token === NATIVE_LOG
     acc.assets.push({
-      asset: token,
-      from: topicAddress(topics[1]),
-      to: topicAddress(topics[2]),
+      asset: native ? 'native' : token,
+      from: topicAddress(topics[1] ?? '0x0'),
+      to: topicAddress(topics[2] ?? '0x0'),
       amount: amount.toString(),
     })
-    acc.tokens.add(token)
+    if (!native) acc.tokens.add(token)
     return
   }
   if (topics[0] === APPROVAL_TOPIC) {

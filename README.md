@@ -159,7 +159,7 @@ forge verify-contract --chain bsc-testnet --watch \
 
 The live chain 97 contracts are CustosHub `0x062D0452187094C1B2dd546B6a793A50eBDBfd06`, CustosRegistry `0x14df99CEa96C8f0980cA0aF46CB5d30de782353A`, and MockAgentID `0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945`. Chain 56 registry reads stay unwired until that deployment exists.
 
-`POST /check` takes `{ "chainId": 56 or 97, "from", "to", "data", "value" }`. `value` is a decimal or hex string. The response is `{ verdict, score, reasons, simulation, explanation, checkedAt }`. `verdict` is `safe`, `warn`, or `danger`. `simulation.mode` is `trace` when `debug_traceCall` succeeded and `call` when the check used `eth_call` plus `eth_estimateGas`. Call mode still decodes approve, increaseAllowance, setApprovalForAll, permit, transferFrom, and Permit2 from the calldata. Trace mode also decodes Transfer and Approval logs.
+`POST /check` takes `{ "chainId": 56 or 97, "from", "to", "data", "value" }`. `value` is a decimal or hex string. The response is `{ verdict, score, reasons, simulation, explanation, checkedAt }`. `verdict` is `safe`, `warn`, or `danger`. `simulation.mode` is `trace` when `debug_traceCall` succeeded, `simulate` when `eth_simulateV1` on `RPC_URL` succeeded, and `call` when the check used `eth_call` plus `eth_estimateGas`. The check tries those in that order. `eth_simulateV1` is called with `traceTransfers: true` and `validation: false`. Its Transfer, Approval, and ApprovalForAll logs become `assetChanges` and `approvals`; a synthetic native transfer is an asset of `native`. Call mode still decodes approve, increaseAllowance, setApprovalForAll, permit, transferFrom, and Permit2 from the calldata.
 
 `GET /health` returns `{ "ok": true }`. `GET /report/:address?chainId=97` returns that address's registry counts. `chainId` defaults to 97.
 
@@ -182,7 +182,7 @@ Put secrets in `.dev.vars` for local dev, or in production with `wrangler secret
 | Name | Required | Purpose |
 | --- | --- | --- |
 | `RPC_URL` | Recommended | Plain JSON-RPC. Alchemy BSC looks like `https://bnb-mainnet.g.alchemy.com/v2/<key>` (testnet: `https://bnb-testnet.g.alchemy.com/v2/<key>`). If empty, chain 56 uses `https://bsc.publicnode.com` and chain 97 uses `https://bsc-testnet.publicnode.com`. |
-| `TRACE_RPC_URL` | No | `debug_traceCall` with `callTracer` and logs. Any provider URL works; nothing in the code is tied to one vendor. If this is empty or the call errors, the check falls back to `RPC_URL`. |
+| `TRACE_RPC_URL` | No | `debug_traceCall` with `callTracer` and logs. Any provider URL works; nothing in the code is tied to one vendor. If this is empty or the call errors, the check uses `eth_simulateV1` on `RPC_URL`, then `eth_call` and `eth_estimateGas`. |
 | `LLM_API_KEY` | No | Explanation rewrite only. |
 | `LLM_BASE_URL`, `LLM_MODEL` | No | Non-secret Worker vars. Defaults are `https://api.openai.com/v1` and `gpt-4o-mini`. |
 

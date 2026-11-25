@@ -1,7 +1,7 @@
 # Copy to api/.dev.vars. Wrangler loads it for `wrangler dev`. Never commit .dev.vars.
 # Production values go in with `wrangler secret put`. Do not paste them into chat.
 
-# Plain JSON-RPC for eth_call, eth_estimateGas, eth_getCode, and registry reads.
+# Plain JSON-RPC for eth_simulateV1, eth_call, eth_estimateGas, eth_getCode, and registry reads.
 # Alchemy BSC mainnet: https://bnb-mainnet.g.alchemy.com/v2/<key>
 # Alchemy BSC testnet: https://bnb-testnet.g.alchemy.com/v2/<key>
 # Point this at the network you are checking. If empty, a public RPC is used.
