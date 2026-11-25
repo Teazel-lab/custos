@@ -25,6 +25,10 @@ export interface AppEnv {
   LLM_API_KEY?: string
   /** Set to `1` in local dev so the API allows localhost origins. Unset in production. */
   ALLOW_DEV_ORIGINS?: string
+  /** Optional GoPlus app key. Ignored unless `GOPLUS_APP_SECRET` is set too. */
+  GOPLUS_APP_KEY?: string
+  /** Optional GoPlus app secret. Ignored unless `GOPLUS_APP_KEY` is set too. */
+  GOPLUS_APP_SECRET?: string
 }
 
 export type ChainId = 56 | 97

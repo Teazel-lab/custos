@@ -13,7 +13,8 @@
       "enabled": false
     }
   },
-  // Non-secret defaults. Per-chain RPC URLs and LLM_API_KEY are Wrangler secrets.
+  // Non-secret defaults. Per-chain RPC URLs, LLM_API_KEY, GOPLUS_APP_KEY, and
+  // GOPLUS_APP_SECRET are Wrangler secrets. GoPlus auth is used only when both are set.
   // Traces stay off so outbound URLs that contain API keys are not recorded.
   "vars": {
     "LLM_BASE_URL": "https://api.openai.com/v1",

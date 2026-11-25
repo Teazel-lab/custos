@@ -19,11 +19,12 @@ export const VALUE_UNSIMULATED = 'Native value was not simulated. Call mode cann
 export const UNSUPPORTED_TESTNET =
   'Honeypot.is and GoPlus do not cover this testnet. Those checks were skipped.'
 
-export function providerReason(name: string): Reason {
+export function providerReason(name: string, detail?: string): Reason {
+  const cause = detail ? ` (${detail})` : ''
   return {
     code: 'provider_failed',
     severity: 'info',
-    message: `${name} did not answer. Treat this check as incomplete.`,
+    message: `${name} did not answer${cause}. Treat this check as incomplete.`,
   }
 }
 

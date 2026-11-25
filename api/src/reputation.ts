@@ -1,5 +1,6 @@
 import { isAddress } from './abi'
 import { cacheGet, cachePut } from './cache'
+import { fetchGoPlus, logProviderFailure, ProviderError, providerDetail, providerHeaders } from './goplus'
 import { providerReason } from './messages'
 import type { AppEnv, ChainId, Reason } from './types'
 
@@ -13,7 +14,7 @@ export const GOPLUS_EMPTY_TTL = 90
  * GoPlus from a Worker often takes longer than 4s. 8s still finishes inside
  * the check deadline. Only a successful body is written to KV.
  */
-export const GOPLUS_TIMEOUT_MS = 8_000
+export { GOPLUS_TIMEOUT_MS } from './goplus'
 const SCAM_TTL = 21_600
 const SCAM_FAIL_TTL = 300
 const SCAM_READY = 'scam:ready'
@@ -42,7 +43,9 @@ export async function checkTokens(
   if (chainId === 97) return []
   const [honeypot, goplus] = await Promise.all([
     honeypotReasons(env, chainId, unique, signal).catch(() => [providerReason('Honeypot')]),
-    goplusTokenReasons(env, chainId, unique, signal, target).catch(() => [providerReason('GoPlus')]),
+    goplusTokenReasons(env, chainId, unique, signal, target).catch((err) => [
+      providerReason('GoPlus', providerDetail(err, 'GoPlus')),
+    ]),
   ])
   return [...honeypot, ...goplus]
 }
@@ -55,9 +58,13 @@ export async function checkAddresses(
 ): Promise<Reason[]> {
   const unique = cap(addresses, 8)
   if (unique.length === 0) return []
-  const scam = await scamReasons(env, unique, signal).catch(() => [providerReason('ScamSniffer')])
+  const scam = await scamReasons(env, unique, signal).catch((err) => [
+    providerReason('ScamSniffer', providerDetail(err, 'ScamSniffer')),
+  ])
   if (chainId === 97) return scam
-  const goplus = await goplusAddressReasons(env, chainId, unique, signal).catch(() => [providerReason('GoPlus')])
+  const goplus = await goplusAddressReasons(env, chainId, unique, signal).catch((err) => [
+    providerReason('GoPlus', providerDetail(err, 'GoPlus')),
+  ])
   return [...goplus, ...scam]
 }
 
@@ -79,7 +86,7 @@ async function honeypotReasons(
           async () => {
             const response = await fetch(
               `https://api.honeypot.is/v2/IsHoneypot?address=${token}&chainID=${chainId}`,
-              { signal: linked(signal, 4_000) },
+              { headers: providerHeaders(), signal: linked(signal, 4_000) },
             )
             if (!response.ok) throw new Error('honeypot http')
             return (await response.json()) as HoneypotBody
@@ -156,6 +163,7 @@ async function goplusAddressReasons(
 ): Promise<Reason[]> {
   const reasons: Reason[] = []
   let failed = false
+  let detail: string | undefined
   await Promise.all(
     addresses.map(async (address) => {
       try {
@@ -167,18 +175,19 @@ async function goplusAddressReasons(
             message: `Address ${address} is flagged by address security.`,
           })
         }
-      } catch {
+      } catch (err) {
         failed = true
+        detail ??= providerDetail(err, 'GoPlus')
       }
     }),
   )
-  if (failed) reasons.push(providerReason('GoPlus'))
+  if (failed) reasons.push(providerReason('GoPlus', detail))
   return reasons
 }
 
 async function scamReasons(env: AppEnv, addresses: string[], signal?: AbortSignal): Promise<Reason[]> {
   const listed = await scamHits(env, addresses, signal)
-  if (listed === 'fail') return [providerReason('ScamSniffer')]
+  if (typeof listed === 'string') return [providerReason('ScamSniffer', listed)]
   const reasons: Reason[] = []
   for (const address of addresses) {
     if (!listed.has(address)) continue
@@ -195,16 +204,25 @@ async function scamReasons(env: AppEnv, addresses: string[], signal?: AbortSigna
  * The blacklist is stored one shard per first address byte. A fetch failure is
  * cached for a few minutes so the next check does not download it again.
  */
-async function scamHits(env: AppEnv, addresses: string[], signal?: AbortSignal): Promise<Set<string> | 'fail'> {
-  if ((await cacheGet(env.CACHE, SCAM_FAIL)) === '1') return 'fail'
+async function scamHits(env: AppEnv, addresses: string[], signal?: AbortSignal): Promise<Set<string> | string> {
+  const failed = await cacheGet(env.CACHE, SCAM_FAIL)
+  if (failed !== null) return scamFailDetail(failed)
   if ((await cacheGet(env.CACHE, SCAM_READY)) === '1') return hitsFromShards(env, addresses)
   try {
-    const response = await fetch(SCAM_URL, { signal: linked(signal, 4_000) })
-    if (!response.ok) throw new Error('scam list http')
+    const response = await fetch(SCAM_URL, { headers: providerHeaders(), signal: linked(signal, 4_000) })
+    if (!response.ok) {
+      logProviderFailure('ScamSniffer', { status: response.status })
+      throw new ProviderError(`ScamSniffer HTTP ${response.status}`)
+    }
     const text = await response.text()
-    if (text.length > MAX_LIST_BYTES) throw new Error('scam list too large')
-    const parsed = JSON.parse(text) as unknown
-    if (!Array.isArray(parsed)) throw new Error('scam list shape')
+    if (text.length > MAX_LIST_BYTES) throw scamInvalid()
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text) as unknown
+    } catch {
+      throw scamInvalid()
+    }
+    if (!Array.isArray(parsed)) throw scamInvalid()
     const list = parsed
       .filter((item): item is string => typeof item === 'string' && isAddress(item))
       .map((item) => item.toLowerCase())
@@ -217,16 +235,34 @@ async function scamHits(env: AppEnv, addresses: string[], signal?: AbortSignal):
     }
     const writes = [...shards].map(([byte, bucket]) => cachePut(env.CACHE, `scam:${byte}`, JSON.stringify(bucket), SCAM_TTL))
     const wrote = await Promise.all(writes)
-    if (wrote.some((ok) => !ok)) throw new Error('scam shard write')
+    if (wrote.some((ok) => !ok)) throw new ProviderError('ScamSniffer cache error')
     const ready = await cachePut(env.CACHE, SCAM_READY, '1', SCAM_TTL)
-    if (!ready) throw new Error('scam ready write')
+    if (!ready) throw new ProviderError('ScamSniffer cache error')
     const set = new Set(list)
     return new Set(addresses.filter((address) => set.has(address)))
   } catch (err) {
-    if (signal?.aborted) throw err
-    await cachePut(env.CACHE, SCAM_FAIL, '1', SCAM_FAIL_TTL)
-    return 'fail'
+    const detail = providerDetail(err, 'ScamSniffer')
+    if (!(err instanceof ProviderError)) {
+      logProviderFailure('ScamSniffer', { error: isTimeout(err) ? 'timeout' : 'network' })
+    }
+    if (isTimeout(err)) throw new ProviderError(detail)
+    await cachePut(env.CACHE, SCAM_FAIL, detail, SCAM_FAIL_TTL)
+    return detail
   }
+}
+
+function scamInvalid(): ProviderError {
+  logProviderFailure('ScamSniffer', { error: 'invalid response' })
+  return new ProviderError('ScamSniffer invalid response')
+}
+
+function scamFailDetail(stored: string): string {
+  if (stored.startsWith('ScamSniffer ')) return stored.slice(0, 80)
+  return 'ScamSniffer network error'
+}
+
+function isTimeout(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
 }
 
 async function hitsFromShards(env: AppEnv, addresses: string[]): Promise<Set<string>> {
@@ -255,13 +291,11 @@ async function goplusAddress(
   const key = `goplus:addr:${chainId}:${address}`
   const hit = await cacheGet(env.CACHE, key)
   if (hit !== null) return JSON.parse(hit) as Record<string, string>
-  const response = await fetch(
+  const body = await fetchGoPlus(
+    env,
     `https://api.gopluslabs.io/api/v1/address_security/${address}?chain_id=${chainId}`,
-    { signal: linked(signal, GOPLUS_TIMEOUT_MS) },
+    signal,
   )
-  if (!response.ok) throw new Error('goplus http')
-  const body = (await response.json()) as { code?: unknown; result?: unknown }
-  if (body.code !== 1 && body.code !== '1') throw new Error('goplus code')
   const record = recordObject(body.result)
   await cachePut(env.CACHE, key, JSON.stringify(record), goplusTtl(record))
   return record
@@ -296,14 +330,12 @@ async function loadGoPlusTokenRecords(
     else absent.add(token)
   }
   if (missing.length === 0) return { records, absent }
-  const response = await fetch(
+  const body = await fetchGoPlus(
+    env,
     `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${missing.join(',')}`,
-    { signal: linked(signal, GOPLUS_TIMEOUT_MS) },
+    signal,
   )
-  if (!response.ok) throw new Error('goplus http')
-  const body = (await response.json()) as { code?: unknown; result?: Record<string, Record<string, string>> }
-  if (body.code !== 1 && body.code !== '1') throw new Error('goplus code')
-  const result = body.result ?? {}
+  const result = (body.result ?? {}) as Record<string, Record<string, string>>
   for (const token of missing) {
     const record = nonempty(lookup(result, token))
     await cachePut(

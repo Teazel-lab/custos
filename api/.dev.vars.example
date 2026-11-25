@@ -24,6 +24,13 @@ TRACE_RPC_URL_97=
 # Optional. Rewrites the explanation only. The verdict is computed before this call.
 LLM_API_KEY=
 
+# Optional GoPlus Security API credentials. Both must be set, or neither.
+# When both are set, the Worker fetches an access token and sends it as Authorization.
+# The token is cached in KV. The key, secret, and token are never logged.
+# Leave both empty to call GoPlus without authentication.
+GOPLUS_APP_KEY=
+GOPLUS_APP_SECRET=
+
 # Allow http://localhost, http://127.0.0.1, and http://[::1] while running wrangler dev.
 # Do not set this in production.
 ALLOW_DEV_ORIGINS=1

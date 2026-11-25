@@ -12,6 +12,10 @@ declare global {
     LLM_API_KEY?: string
     /** `1` allows localhost origins. Set it in `.dev.vars` only. */
     ALLOW_DEV_ORIGINS?: string
+    /** Optional GoPlus app key. Ignored unless `GOPLUS_APP_SECRET` is set too. */
+    GOPLUS_APP_KEY?: string
+    /** Optional GoPlus app secret. Ignored unless `GOPLUS_APP_KEY` is set too. */
+    GOPLUS_APP_SECRET?: string
   }
 }
 
