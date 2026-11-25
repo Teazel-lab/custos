@@ -143,7 +143,7 @@ function logoMark(): SVGSVGElement {
   grad.setAttribute('y1', '0')
   grad.setAttribute('x2', '1')
   grad.setAttribute('y2', '1')
-  for (const [offset, color] of [['0%', '#7af0ff'], ['100%', '#8a6bff']] as const) {
+  for (const [offset, color] of [['0%', '#ff4d5e'], ['100%', '#ff9a5a']] as const) {
     const stop = document.createElementNS('http://www.w3.org/2000/svg', 'stop')
     stop.setAttribute('offset', offset)
     stop.setAttribute('stop-color', color)
@@ -159,12 +159,12 @@ function logoMark(): SVGSVGElement {
   eye.setAttribute('cx', '16')
   eye.setAttribute('cy', '15')
   eye.setAttribute('r', '4.2')
-  eye.setAttribute('fill', '#06101f')
+  eye.setAttribute('fill', '#1a060c')
   const glint = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
   glint.setAttribute('cx', '17.4')
   glint.setAttribute('cy', '13.6')
   glint.setAttribute('r', '1.3')
-  glint.setAttribute('fill', '#eaf7ff')
+  glint.setAttribute('fill', '#fff6f4')
   svg.append(defs, circle, eye, glint)
   return svg
 }

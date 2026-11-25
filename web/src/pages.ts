@@ -606,7 +606,7 @@ function heroPhoto(): HTMLElement {
       el('img', {
         attrs: {
           src: owlJpg,
-          alt: 'A blue owl perched on a snowy branch, watching from the right of a dark forest.',
+          alt: 'A blue owl in round glasses perched on a snowy branch against a deep red night.',
           width: '1280',
           height: '720',
           decoding: 'async',
