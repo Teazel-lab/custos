@@ -167,11 +167,11 @@ The live chain 97 contracts are CustosHub `0x062D0452187094C1B2dd546B6a793A50eBD
 
 `GET /health` returns `{ "ok": true }`. `GET /report/:address?chainId=97` returns that address's registry counts. `chainId` defaults to 97. A short registry `eth_call` result is a failed read, not a zero count.
 
-Signals run together under one deadline of about 10 seconds. A provider that times out or errors becomes a `warn` reason and the rest of the check still finishes. Token and address reputation on chain 56 use honeypot.is, GoPlus, and the public ScamSniffer blacklist. GoPlus `address_security` is one address per request. Chain 97 skips honeypot.is and GoPlus and adds `unsupported_on_testnet`. An optional OpenAI-compatible model may rewrite the explanation. It cannot change `verdict`. A reply that says "safe" when the verdict is not safe, or that drops a reason code, falls back to the template. The explanation always says to confirm the transaction in the caller's own wallet.
+Signals run together under one deadline of about 10 seconds. A provider that times out or errors becomes an info reason (`provider_failed`) and the rest of the check still finishes. That info reason does not move a verdict from safe to warn. GoPlus address and token calls wait about 8 seconds. A successful GoPlus response is cached in KV for about an hour. A failed GoPlus call is not cached, so the next check tries again. Token and address reputation on chain 56 use honeypot.is, GoPlus, and the public ScamSniffer blacklist. GoPlus `address_security` is one address per request. Chain 97 skips honeypot.is and GoPlus and adds `unsupported_on_testnet`. An optional OpenAI-compatible model may rewrite the explanation. It cannot change `verdict`. A reply that says "safe" when the verdict is not safe, or that drops a reason code, falls back to the template. The explanation always says to confirm the transaction in the caller's own wallet.
 
 Results are cached in KV. Cache errors are ignored. The check cache is about 60 seconds. Code lookups are about 10 minutes, so an EIP-7702 delegation (`0xef0100`) is not treated as a contract for a day. The ScamSniffer list is stored in shards by the first address byte, and a failed download is remembered for about 5 minutes. Requests are limited to 60 per minute by the Workers Rate Limiting binding (`CHECK_LIMIT`). IPv6 clients share a key on the /64 prefix. The API is free and keyless. `authorize()` is the place a later plan check would read `Authorization`.
 
-Browser calls are allowed from `https://custosprotocol.com` and `https://www.custosprotocol.com`.
+Browser calls are allowed from `https://custosprotocol.com`, `https://www.custosprotocol.com`, and local dev origins on `http://localhost` and `http://127.0.0.1` (any port).
 
 ### Setup
 
@@ -219,3 +219,7 @@ curl -s -X POST http://localhost:8787/check \
 ```
 
 Set `RPC_URL_56` and `RPC_URL_97` separately. A mainnet Alchemy URL will not answer chain 97 reads, and the worker will not send a chain 97 check to it.
+
+## Website
+
+`web/` is the static site for custosprotocol.com. It calls this API from the browser and asks the user's own wallet to confirm `activate` or `report`. It does not take a key. Local dev and Cloudflare deploy steps are in `web/README.md`.

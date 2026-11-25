@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseTx, runCheck } from '../src/check'
+import { GOPLUS_TIMEOUT_MS } from '../src/reputation'
 import { handle } from '../src/index'
 import { WALLET_SENTENCE } from '../src/messages'
 import { clientKey } from '../src/ratelimit'
@@ -183,7 +184,8 @@ describe('POST /check', () => {
       const body = await response.json() as CheckBody
       expect(response.status).toBe(200)
       expect(body.verdict).toBe('danger')
-      expect(body.score).toBe(15)
+      expect(body.score).toBe(30)
+      expect(body.reasons.filter((reason) => reason.code === 'provider_failed').every((reason) => reason.severity === 'info')).toBe(true)
       expect(body.simulation.mode).toBe('call')
       expect(body.reasons.map((reason) => reason.code)).toContain('unlimited_approval')
       expect(body.reasons.map((reason) => reason.code)).toContain('provider_failed')
@@ -400,7 +402,9 @@ describe('POST /check', () => {
       const body = await response.json() as CheckBody
       expect(response.status).toBe(200)
       expect(body.verdict).toBe('warn')
-      expect(body.reasons.map((reason) => reason.code)).toContain('provider_failed')
+      const failed = body.reasons.find((reason) => reason.message.startsWith('GoPlus'))
+      expect(failed?.code).toBe('provider_failed')
+      expect(failed?.severity).toBe('info')
     } finally {
       calls.restore()
     }
@@ -493,6 +497,14 @@ describe('POST /check', () => {
       }), env)
       expect(options.status).toBe(204)
       expect(options.headers.get('Access-Control-Allow-Origin')).toBe('https://www.custosprotocol.com')
+      const local = await handle(new Request('https://custos.test/health', {
+        headers: { Origin: 'http://localhost:5173' },
+      }), env)
+      expect(local.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:5173')
+      const loopback = await handle(new Request('https://custos.test/health', {
+        headers: { Origin: 'http://127.0.0.1:4173' },
+      }), env)
+      expect(loopback.headers.get('Access-Control-Allow-Origin')).toBe('http://127.0.0.1:4173')
     } finally {
       calls.restore()
     }
@@ -931,6 +943,103 @@ describe('review regressions', () => {
       const cached = testEnv()
       cached.CACHE.fail = true
       expect((await post(cached, tx())).status).toBe(200)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('gives GoPlus 8 seconds and caches a successful result', async () => {
+    const seen: number[] = []
+    const signalApi = AbortSignal as unknown as { timeout: (ms: number) => AbortSignal }
+    const original = signalApi.timeout
+    signalApi.timeout = (ms: number) => {
+      seen.push(ms)
+      return original.call(AbortSignal, ms)
+    }
+    let addressCalls = 0
+    let tokenCalls = 0
+    const env = testEnv()
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') {
+          return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        }
+        return undefined
+      },
+      (url) => {
+        if (url.includes('/address_security/')) {
+          addressCalls += 1
+          return { code: 1, result: { phishing_activities: '0' } }
+        }
+        if (url.includes('/token_security/')) {
+          tokenCalls += 1
+          return { code: 1, result: { [TOKEN]: { is_honeypot: '0', cannot_sell_all: '0' } } }
+        }
+        return undefined
+      },
+    )
+    try {
+      const approval = encode('095ea7b3', [BigInt(SPENDER), 1n])
+      const first = await post(env, tx(approval, 56))
+      const firstBody = await first.json() as CheckBody
+      expect(first.status).toBe(200)
+      expect(firstBody.reasons.map((reason) => reason.code)).not.toContain('provider_failed')
+      expect(seen.filter((ms) => ms === GOPLUS_TIMEOUT_MS).length).toBeGreaterThanOrEqual(2)
+      expect(GOPLUS_TIMEOUT_MS).toBe(8_000)
+      const cached = [...env.CACHE.expirations.entries()].filter(([key]) => key.startsWith('goplus:'))
+      expect(cached.length).toBeGreaterThan(0)
+      expect(cached.every(([, ttl]) => ttl === 3_600)).toBe(true)
+      const after = { addressCalls, tokenCalls }
+      const second = await post(env, tx(approval, 56, { from: SPENDER }))
+      expect(second.status).toBe(200)
+      expect(addressCalls).toBe(after.addressCalls)
+      expect(tokenCalls).toBe(after.tokenCalls)
+    } finally {
+      signalApi.timeout = original
+      calls.restore()
+    }
+  })
+
+  it('does not cache a failed GoPlus call', async () => {
+    let hits = 0
+    const env = testEnv()
+    const calls = installFetch(undefined, (url) => {
+      if (!url.includes('/address_security/')) return undefined
+      hits += 1
+      if (hits === 1) throw new Error('goplus slow')
+      return { code: 1, result: {} }
+    })
+    try {
+      await post(env, tx('0x', 56))
+      expect([...env.CACHE.expirations.keys()].some((key) => key.startsWith('goplus:'))).toBe(false)
+      await post(env, tx('0x', 56, { from: SPENDER }))
+      expect(hits).toBe(2)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('keeps a clean simulated transfer safe when a provider fails', async () => {
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') {
+          return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        }
+        return undefined
+      },
+      (url) => {
+        if (url.startsWith('https://raw.githubusercontent.com/scamsniffer/')) throw new Error('scam down')
+        return undefined
+      },
+    )
+    try {
+      const response = await post(testEnv(), tx())
+      const body = await response.json() as CheckBody
+      const failed = body.reasons.find((reason) => reason.code === 'provider_failed')
+      expect(failed?.severity).toBe('info')
+      expect(body.simulation.mode).toBe('simulate')
+      expect(body.verdict).toBe('safe')
+      expect(body.score).toBe(100)
     } finally {
       calls.restore()
     }

@@ -22,7 +22,7 @@ export const UNSUPPORTED_TESTNET =
 export function providerReason(name: string): Reason {
   return {
     code: 'provider_failed',
-    severity: 'warn',
+    severity: 'info',
     message: `${name} did not answer. Treat this check as incomplete.`,
   }
 }

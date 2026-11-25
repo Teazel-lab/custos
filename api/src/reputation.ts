@@ -6,6 +6,11 @@ import type { AppEnv, ChainId, Reason } from './types'
 const SCAM_URL = 'https://raw.githubusercontent.com/scamsniffer/scam-database/main/blacklist/address.json'
 const TOKEN_TTL = 3_600
 const ADDRESS_TTL = 3_600
+/**
+ * GoPlus from a Worker often takes longer than 4s. 8s still finishes inside
+ * the check deadline. Only a successful body is written to KV.
+ */
+export const GOPLUS_TIMEOUT_MS = 8_000
 const SCAM_TTL = 21_600
 const SCAM_FAIL_TTL = 300
 const SCAM_READY = 'scam:ready'
@@ -148,7 +153,7 @@ async function goplusAddressReasons(
           async () => {
             const response = await fetch(
               `https://api.gopluslabs.io/api/v1/address_security/${address}?chain_id=${chainId}`,
-              { signal: linked(signal, 4_000) },
+              { signal: linked(signal, GOPLUS_TIMEOUT_MS) },
             )
             if (!response.ok) throw new Error('goplus http')
             const body = (await response.json()) as { code?: unknown; result?: unknown }
@@ -262,7 +267,7 @@ async function loadGoPlusTokenRecords(
   if (missing.length === 0) return records
   const response = await fetch(
     `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${missing.join(',')}`,
-    { signal: linked(signal, 4_000) },
+    { signal: linked(signal, GOPLUS_TIMEOUT_MS) },
   )
   if (!response.ok) throw new Error('goplus http')
   const body = (await response.json()) as { code?: unknown; result?: Record<string, Record<string, string>> }
@@ -283,6 +288,7 @@ function lookup(result: Record<string, Record<string, string>>, address: string)
   return null
 }
 
+/** Caches a successful load only. A thrown load, including a timeout, is not stored. */
 async function cachedJson<T>(env: AppEnv, key: string, ttl: number, load: () => Promise<T>): Promise<T> {
   const hit = await cacheGet(env.CACHE, key)
   if (hit !== null) return JSON.parse(hit) as T
