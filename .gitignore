@@ -1,0 +1,10 @@
+# Secrets. Forge reads contracts/.env; never commit it.
+.env
+.env.*
+!.env.example
+
+# Foundry build artifacts and locally installed dependencies.
+contracts/cache/
+contracts/out/
+contracts/broadcast/
+contracts/lib/
