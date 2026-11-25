@@ -8,7 +8,10 @@ export function onRoute(next: Listener): void {
 }
 
 export function navigate(path: string): void {
-  if (location.pathname !== path) history.pushState(null, '', path)
+  const url = new URL(path, location.origin)
+  const next = `${url.pathname.replace(/\/$/, '') || '/'}${url.hash}`
+  const current = `${location.pathname.replace(/\/$/, '') || '/'}${location.hash}`
+  if (current !== next) history.pushState(null, '', next)
   listener?.(currentPath())
 }
 
