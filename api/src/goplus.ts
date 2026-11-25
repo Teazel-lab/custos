@@ -46,6 +46,13 @@ interface TokenSlot {
 
 /** One in-flight token fetch per cache binding, so two tests do not share a token. */
 const slots = new WeakMap<object, Map<string, TokenSlot>>()
+/** Absolute time when this isolate stops calling GoPlus. A KV read must not push it later than the stored deadline. */
+let rateLimitedUntil = 0
+
+/** Tests share one isolate. Production code does not call this. */
+export function clearGoPlusRateLimitForTests(): void {
+  rateLimitedUntil = 0
+}
 
 export class ProviderError extends Error {
   readonly detail: string
@@ -55,14 +62,17 @@ export class ProviderError extends Error {
   readonly credential: boolean
   /** GoPlus JSON `code`, when the body had one. */
   readonly code: number | undefined
+  /** HTTP status, when the response was not OK. */
+  readonly status: number | undefined
 
-  constructor(detail: string, retry?: 'refresh' | 'noauth', credential = false, code?: number) {
+  constructor(detail: string, retry?: 'refresh' | 'noauth', credential = false, code?: number, status?: number) {
     super(detail)
     this.name = 'ProviderError'
     this.detail = detail
     this.retry = retry
     this.credential = credential
     this.code = code
+    this.status = status
   }
 }
 
@@ -138,7 +148,7 @@ function goplusCredentials(env: AppEnv): GoPlusCreds | undefined {
 }
 
 export async function fetchGoPlus(env: AppEnv, url: string, signal?: AbortSignal): Promise<GoPlusBody> {
-  if ((await cacheGet(env.CACHE, GOPLUS_RATE_LIMIT_KEY)) !== null) {
+  if (rateLimitActive() || (await cooledDown(env))) {
     throw new ProviderError('GoPlus rate limited')
   }
   const cacheKey = await authCacheKey(env)
@@ -174,12 +184,12 @@ async function recoverDataCall(
     } catch (next) {
       if (!(next instanceof ProviderError) || next.retry !== 'noauth') throw next
       if (cacheKey) await forgetToken(env, cacheKey, refreshed)
-      return callWithoutAuth(env, url, signal, cacheKey)
+      return callWithoutAuth(env, url, signal, cacheKey, true)
     }
   }
   if (!headerRejected(err)) throw err
   if (cacheKey) await forgetToken(env, cacheKey, failed)
-  return callWithoutAuth(env, url, signal, cacheKey)
+  return callWithoutAuth(env, url, signal, cacheKey, false)
 }
 
 async function callWithoutAuth(
@@ -187,9 +197,9 @@ async function callWithoutAuth(
   url: string,
   signal: AbortSignal | undefined,
   cacheKey: string | undefined,
+  rejectedTwice: boolean,
 ): Promise<GoPlusBody> {
-  // Remember the rejected header even when the headerless call fails.
-  if (cacheKey) await cachePut(env.CACHE, noAuthKey(cacheKey), '1', GOPLUS_TOKEN_BACKOFF_SECONDS)
+  if (rejectedTwice && cacheKey) await cachePut(env.CACHE, noAuthKey(cacheKey), '1', GOPLUS_TOKEN_BACKOFF_SECONDS)
   return requestGoPlus(env, url, undefined, signal)
 }
 
@@ -336,20 +346,39 @@ async function requestGoPlus(
   signal: AbortSignal | undefined,
   refreshed = false,
 ): Promise<GoPlusBody> {
+  if (rateLimitActive()) throw new ProviderError('GoPlus rate limited')
   try {
     return await goplusOnce(env, url, authorization, signal, refreshed)
   } catch (err) {
     if (!(err instanceof ProviderError) || !isRateLimit(err) || signal?.aborted) throw err
+    // The first 4029 in this isolate owns the single retry. Everyone else stops.
+    if (!armRateLimit(env)) throw new ProviderError('GoPlus rate limited')
     await rateLimitPause(signal)
-    try {
-      return await goplusOnce(env, url, authorization, signal, refreshed)
-    } catch (next) {
-      if (next instanceof ProviderError && isRateLimit(next)) {
-        await cachePut(env.CACHE, GOPLUS_RATE_LIMIT_KEY, '1', GOPLUS_RATE_LIMIT_SECONDS)
-      }
-      throw next
-    }
+    return goplusOnce(env, url, authorization, signal, refreshed)
   }
+}
+
+function rateLimitActive(): boolean {
+  return Date.now() < rateLimitedUntil
+}
+
+/** True the first time this window is opened. Later calls in the window do not write KV again. */
+function armRateLimit(env: AppEnv): boolean {
+  const now = Date.now()
+  if (rateLimitedUntil > now) return false
+  rateLimitedUntil = now + GOPLUS_RATE_LIMIT_SECONDS * 1000
+  void cachePut(env.CACHE, GOPLUS_RATE_LIMIT_KEY, String(rateLimitedUntil), GOPLUS_RATE_LIMIT_SECONDS)
+  return true
+}
+
+/** A stored deadline in the past does not start a new 60 second window. */
+async function cooledDown(env: AppEnv): Promise<boolean> {
+  const raw = await cacheGet(env.CACHE, GOPLUS_RATE_LIMIT_KEY)
+  if (raw === null) return false
+  const until = Number(raw)
+  if (!Number.isFinite(until) || until <= Date.now()) return false
+  if (until > rateLimitedUntil) rateLimitedUntil = until
+  return true
 }
 
 async function goplusOnce(
@@ -384,13 +413,19 @@ async function goplusOnce(
       code: loggedCode(body?.code),
       message: clipMessage(body?.message, secrets),
     })
-    throw new ProviderError(detail, dataRetry(response.status, body?.code, refreshed), false, code)
+    throw new ProviderError(
+      detail,
+      dataRetry(response.status, body?.code, refreshed),
+      false,
+      code,
+      response.ok ? undefined : response.status,
+    )
   }
   return body ?? {}
 }
 
 function isRateLimit(err: ProviderError): boolean {
-  return isCode(err.code, 4029) || err.detail === 'GoPlus HTTP 429'
+  return isCode(err.code, 4029) || err.status === 429
 }
 
 /** 300–700ms, and it stops early when the check deadline aborts. */
