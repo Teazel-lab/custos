@@ -3,6 +3,7 @@ import {
   buildCheckRequest,
   fetchReport,
   postCheck,
+  severityClass,
   type CheckResponse,
   type ReportResponse,
   type ScannerFields,
@@ -26,7 +27,6 @@ import {
   browserWallet,
   connectWallet,
   discoveredProviders,
-  refreshWallet,
   subscribeDiscovery,
   subscribeWallet,
   switchNetwork,
@@ -64,8 +64,8 @@ export function renderLanding(root: HTMLElement): () => void {
     el('section', {
       class: 'grid-3',
       children: [
-        verdictCard('safe', 'Safe', 'No warn or danger signal fired. Info notes, including a provider that did not answer, stay on safe.'),
-        verdictCard('warn', 'Warn', 'Something needs a look: an allowance, value leaving the sender, or a community report.'),
+        verdictCard('safe', 'Safe', 'Reputation checks finished and no warn or danger signal fired. If GoPlus or ScamSniffer did not answer, complete is false and the verdict is warn.'),
+        verdictCard('warn', 'Warn', 'Something needs a look: an allowance, value leaving the sender, a community report, or a reputation check that did not finish.'),
         verdictCard('danger', 'Danger', 'A stronger signal, such as a honeypot, an unlimited allowance, or a flagged address.'),
       ],
     }),
@@ -234,6 +234,8 @@ function renderWalletPage(root: HTMLElement, mode: 'activate' | 'report'): () =>
   const status = el('div', { class: 'stack' })
   const connectSlot = el('div', { class: 'row' })
   const txBox = el('div', { class: 'stack' })
+  const connectError = el('p', { class: 'error' })
+  let pending = false
   const target = input({ placeholder: '0x… address to report' })
   const reason = el('select') as HTMLSelectElement
   for (const item of REPORT_REASONS) reason.append(option(String(item.code), `${item.code} — ${item.name}`))
@@ -248,16 +250,15 @@ function renderWalletPage(root: HTMLElement, mode: 'activate' | 'report'): () =>
     connectSlot.replaceChildren()
     const found = discoveredProviders()
     const injected = browserWallet()
-    const injectedListed = found.some((item) => item.provider === injected)
     if (found.length === 0 && !injected) {
       connectSlot.append(el('p', { text: 'No injected wallet was found. Install MetaMask or Binance Wallet in this browser, then reload. Custos does not show a QR code and does not ask for a seed phrase.' }))
       return
     }
     for (const item of found) {
-      connectSlot.append(connectButton(item.info.name, item.provider, () => void paint()))
+      connectSlot.append(connectButton(item.info.name, item.provider, connectError, () => void paint()))
     }
-    if (injected && !injectedListed) {
-      connectSlot.append(connectButton('Browser wallet', injected, () => void paint()))
+    if (found.length === 0 && injected) {
+      connectSlot.append(connectButton('Browser wallet', injected, connectError, () => void paint()))
     }
   }
 
@@ -266,35 +267,40 @@ function renderWalletPage(root: HTMLElement, mode: 'activate' | 'report'): () =>
     const gen = ++paintGen
     status.replaceChildren(el('p', { class: 'muted', text: 'Reading…' }))
     const view = await loadStatus(selected, (message) => {
-      txBox.replaceChildren(el('p', { class: 'error', text: message }))
+      if (!pending) txBox.replaceChildren(el('p', { class: 'error', text: message }))
     })
     if (gen !== paintGen) return
     status.replaceChildren(...view.nodes)
     const session = walletState()
     const onNetwork = session.chainId === selected
-    const mayActivate = view.holder || view.protectedWallet === true
-    action.disabled = !contractsReady(selected) || !session.account || !onNetwork || (mode === 'report' ? !view.holder : !mayActivate)
+    const mayActivate = view.holder && view.protectedWallet === false
+    action.disabled = pending || !contractsReady(selected) || !session.account || !onNetwork || (mode === 'report' ? !view.holder : !mayActivate)
   }
 
   action.addEventListener('click', () => {
     const session = walletState()
-    if (!session.provider || !session.account) return
+    if (pending || !session.provider || !session.account || action.disabled) return
+    const chainAtSend = selected
+    pending = true
     action.disabled = true
     txBox.replaceChildren(el('p', { class: 'muted', text: 'Confirm the transaction in your wallet.' }))
     const run = mode === 'activate'
-      ? activateWallet(session.provider, session.account, selected)
-      : reportTarget(session.provider, session.account, selected, target.value, Number(reason.value) as ReportReason)
+      ? activateWallet(session.provider, session.account, chainAtSend)
+      : reportTarget(session.provider, session.account, chainAtSend, target.value, Number(reason.value) as ReportReason)
     void run
       .then((hash) => {
         txBox.replaceChildren(
           el('p', { text: 'Transaction submitted. You confirmed it in your wallet.' }),
-          externalLink(bscscanTx(selected, hash), `View ${shortAddress(hash)} on BscScan`),
+          externalLink(bscscanTx(chainAtSend, hash), `View ${shortAddress(hash)} on BscScan`),
         )
       })
       .catch((err: unknown) => {
         txBox.replaceChildren(el('p', { class: 'error', text: chainError(err) }))
       })
-      .finally(() => { void paint() })
+      .finally(() => {
+        pending = false
+        void paint()
+      })
   })
 
   const chainPicker = chainButtons(selected, (next) => {
@@ -320,6 +326,7 @@ function renderWalletPage(root: HTMLElement, mode: 'activate' | 'report'): () =>
         el('h2', { text: 'Wallet' }),
         el('p', { class: 'muted', text: 'Injected provider only, discovered with EIP-6963. No WalletConnect QR. No seed phrase.' }),
         connectSlot,
+        connectError,
         chainPicker,
         status,
         ...(mode === 'report'
@@ -379,7 +386,6 @@ async function loadStatus(chainId: ChainId, onError: (message: string) => void):
       if (!provider) return
       button.disabled = true
       void switchNetwork(provider, chainId)
-        .then(() => refreshWallet())
         .catch((err: unknown) => onError(walletError(err)))
         .finally(() => { button.disabled = false })
     })
@@ -425,19 +431,25 @@ function agentCallout(chainId: ChainId, agent: AgentRead): HTMLElement {
   } else if (!chain.agentIdHasHandle) {
     holder.append(el('p', { text: `Mock Agent ID balance ${agent.balance.toString()}.` }), el('p', { class: 'muted', text: 'Testnet mock. This is not a .ai handle.' }))
   } else {
-    holder.append(el('p', { text: 'This wallet holds Agent ID, and handleOf returned an empty name.' }))
+    holder.append(el('p', { text: 'This wallet holds Agent ID.' }), el('p', { class: 'muted', text: 'handleOf did not return a name.' }))
   }
   return holder
 }
 
-function connectButton(name: string, provider: Eip1193Provider, after: () => void): HTMLButtonElement {
+function connectButton(
+  name: string,
+  provider: Eip1193Provider,
+  error: HTMLElement,
+  after: () => void,
+): HTMLButtonElement {
   const button = el('button', { class: 'button', text: `Connect ${name}`, attrs: { type: 'button' } })
   button.addEventListener('click', () => {
     button.disabled = true
+    error.textContent = ''
     void connectWallet(provider, name)
       .then(after)
       .catch((err: unknown) => {
-        button.insertAdjacentElement('afterend', el('p', { class: 'error', text: walletError(err) }))
+        error.textContent = walletError(err)
       })
       .finally(() => { button.disabled = false })
   })
@@ -481,14 +493,33 @@ function renderCheck(result: CheckResponse): HTMLElement {
     children: [
       el('p', { class: 'eyebrow', text: 'Verdict' }),
       el('h2', { text: result.verdict }),
-      el('p', { class: 'meta', text: `Score ${result.score} · mode ${result.simulation.mode} · ${result.simulation.success ? 'simulation succeeded' : 'simulation failed'}` }),
+      el('p', { class: 'meta', text: checkMeta(result) }),
       el('p', { text: result.explanation }),
       result.reasons.length
-        ? el('ul', { class: 'reasons', children: result.reasons.map((reason) => el('li', { children: [el('span', { class: `pill ${reason.severity}`, text: reason.severity }), el('span', { text: reason.message })] })) })
+        ? el('ul', {
+            class: 'reasons',
+            children: result.reasons.map((reason) => el('li', {
+              children: [
+                el('span', { class: `pill ${severityClass(reason.severity)}`, text: severityClass(reason.severity) }),
+                el('span', { text: reason.message }),
+              ],
+            })),
+          })
         : el('p', { text: 'No reasons were returned.' }),
       ...(result.simulation.revertReason ? [el('p', { class: 'muted', text: `Revert text from the chain: ${result.simulation.revertReason}` })] : []),
     ],
   })
+}
+
+function checkMeta(result: CheckResponse): string {
+  const completeness = result.complete === false ? 'incomplete' : result.complete === true ? 'complete' : ''
+  const parts = [
+    `Score ${result.score}`,
+    `mode ${result.simulation.mode}`,
+    result.simulation.success ? 'simulation succeeded' : 'simulation failed',
+  ]
+  if (completeness) parts.push(completeness)
+  return parts.join(' · ')
 }
 
 function renderRegistry(report: ReportResponse): HTMLElement {

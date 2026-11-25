@@ -37,7 +37,7 @@ Cloudflare Workers static assets, from `web/` after `npm run build`:
 npx wrangler deploy
 ```
 
-`wrangler.jsonc` serves `dist/` and falls unknown paths back to `index.html`, so `/activate` and the other routes keep working on refresh.
+`wrangler.jsonc` serves `dist/` and falls unknown paths back to `index.html`, so `/activate` and the other routes keep working on refresh. `public/_headers` sets a content security policy, `nosniff`, and `frame-ancestors: none`. Fonts are bundled with the site.
 
 Cloudflare Pages, same build output:
 
@@ -45,7 +45,7 @@ Cloudflare Pages, same build output:
 npx wrangler pages deploy dist --project-name custos-web
 ```
 
-`public/_redirects` is copied into `dist/` and sends every path to `index.html`.
+Pages serves the SPA fallback when the project has no `404.html`. Workers uses `not_found_handling`.
 
 Point `custosprotocol.com` and `www.custosprotocol.com` at that deployment. The API already allows both origins.
 

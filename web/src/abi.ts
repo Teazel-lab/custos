@@ -26,6 +26,16 @@ export const registryAbi = [
     ],
     outputs: [],
   },
+  {
+    type: 'function',
+    name: 'hasReported',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'reporter', type: 'address' },
+      { name: 'target', type: 'address' },
+    ],
+    outputs: [{ type: 'bool' }],
+  },
 ] as const
 
 export const agentIdAbi = [

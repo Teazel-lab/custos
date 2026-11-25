@@ -21,6 +21,8 @@ export interface Reason {
 export interface CheckResponse {
   verdict: 'safe' | 'warn' | 'danger' | string
   score: number
+  /** Present on the updated API. False means GoPlus or ScamSniffer did not answer. */
+  complete?: boolean
   reasons: Reason[]
   simulation: {
     mode: string
@@ -91,12 +93,84 @@ export async function postCheck(body: CheckRequest): Promise<CheckResponse> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
-  return readJson(response, 'Check failed.')
+  return parseCheckResponse(await readJson<unknown>(response, 'Check failed.'))
 }
 
 export async function fetchReport(address: string, chainId: ChainId): Promise<ReportResponse> {
   const response = await fetch(reportUrl(address, chainId))
-  return readJson(response, 'Registry lookup failed.')
+  return parseReportResponse(await readJson<unknown>(response, 'Registry lookup failed.'))
+}
+
+export function severityClass(severity: string): string {
+  if (severity === 'info' || severity === 'warn' || severity === 'danger') return severity
+  return 'neutral'
+}
+
+export function parseCheckResponse(value: unknown): CheckResponse {
+  if (!value || typeof value !== 'object') throw new Error('The check response was not in the expected shape.')
+  const body = value as Partial<CheckResponse>
+  const simulation = body.simulation
+  if (typeof body.verdict !== 'string' || typeof body.score !== 'number' || typeof body.explanation !== 'string') {
+    throw new Error('The check response was not in the expected shape.')
+  }
+  if (!simulation || typeof simulation !== 'object' || typeof simulation.mode !== 'string') {
+    throw new Error('The check response was not in the expected shape.')
+  }
+  if (!Array.isArray(body.reasons)) throw new Error('The check response was not in the expected shape.')
+  const reasons: Reason[] = []
+  for (const item of body.reasons) {
+    if (!item || typeof item !== 'object') continue
+    if (typeof item.code !== 'string' || typeof item.message !== 'string') continue
+    reasons.push({
+      code: item.code,
+      severity: typeof item.severity === 'string' ? item.severity : 'info',
+      message: item.message,
+    })
+  }
+  return {
+    verdict: body.verdict,
+    score: body.score,
+    ...(typeof body.complete === 'boolean' ? { complete: body.complete } : {}),
+    reasons,
+    simulation: {
+      mode: simulation.mode,
+      success: simulation.success === true,
+      revertReason: typeof simulation.revertReason === 'string' ? simulation.revertReason : null,
+      assetChanges: Array.isArray(simulation.assetChanges) ? simulation.assetChanges : [],
+      approvals: Array.isArray(simulation.approvals) ? simulation.approvals : [],
+    },
+    explanation: body.explanation,
+    checkedAt: typeof body.checkedAt === 'string' ? body.checkedAt : '',
+  }
+}
+
+export function parseReportResponse(value: unknown): ReportResponse {
+  if (!value || typeof value !== 'object') throw new Error('The registry response was not in the expected shape.')
+  const body = value as Partial<ReportResponse>
+  if (typeof body.address !== 'string' || (body.chainId !== 56 && body.chainId !== 97)) {
+    throw new Error('The registry response was not in the expected shape.')
+  }
+  if (typeof body.configured !== 'boolean' || typeof body.reportCount !== 'string' || !body.reasons) {
+    throw new Error('The registry response was not in the expected shape.')
+  }
+  const reasons = body.reasons
+  for (const key of ['drainer', 'honeypot', 'phishing', 'mintOrRug', 'other'] as const) {
+    if (typeof reasons[key] !== 'string') throw new Error('The registry response was not in the expected shape.')
+  }
+  return {
+    address: body.address,
+    chainId: body.chainId,
+    configured: body.configured,
+    reportCount: body.reportCount,
+    reasons: {
+      drainer: reasons.drainer,
+      honeypot: reasons.honeypot,
+      phishing: reasons.phishing,
+      mintOrRug: reasons.mintOrRug,
+      other: reasons.other,
+    },
+    ...(typeof body.message === 'string' ? { message: body.message } : {}),
+  }
 }
 
 function addressField(value: string, name: string): string {

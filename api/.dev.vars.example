@@ -23,3 +23,7 @@ TRACE_RPC_URL_97=
 
 # Optional. Rewrites the explanation only. The verdict is computed before this call.
 LLM_API_KEY=
+
+# Allow http://localhost, http://127.0.0.1, and http://[::1] while running wrangler dev.
+# Do not set this in production.
+ALLOW_DEV_ORIGINS=1

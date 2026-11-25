@@ -1,4 +1,4 @@
-import { getAddress, isAddress, type Address } from 'viem'
+import { getAddress, isAddress, numberToHex, type Address } from 'viem'
 import { addChainParams, type ChainId } from './config'
 
 export interface Eip1193Provider {
@@ -103,10 +103,21 @@ export async function switchNetwork(provider: Eip1193Provider, chainId: ChainId)
   try {
     await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: params.chainId }] })
   } catch (err) {
-    if (errorCode(err) !== 4902) throw err
+    if (!shouldAddChain(err)) throw err
     await provider.request({ method: 'wallet_addEthereumChain', params: [params] })
   }
   if (state.provider === provider) await refreshWallet()
+}
+
+/** The exact `eth_sendTransaction` params. `chainId` makes the wallet reject a network change. */
+export function transactionCall(from: Address, to: Address, data: string, chainId: number): {
+  from: Address
+  to: Address
+  data: string
+  value: '0x0'
+  chainId: string
+} {
+  return { from, to, data, value: '0x0', chainId: numberToHex(chainId) }
 }
 
 /**
@@ -124,17 +135,27 @@ export async function sendTransaction(
   if (chainId !== expectedChainId) {
     throw new Error('Switch the wallet to the selected network, then try again. Nothing was sent.')
   }
+  const accounts = asAccounts(await provider.request({ method: 'eth_accounts' }))
+  const current = firstAccount(accounts)
+  if (!current || current !== from) {
+    throw new Error('The wallet account changed. Connect again. Nothing was sent.')
+  }
   const hash = await provider.request({
     method: 'eth_sendTransaction',
-    params: [{ from, to, data }],
+    params: [transactionCall(from, to, data, expectedChainId)],
   })
   if (typeof hash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(hash)) throw new Error('The wallet did not return a transaction hash.')
   if (state.provider === provider) state = { ...state, chainId }
   return hash
 }
 
+/** True when the wallet does not know the chain yet, including MetaMask's nested 4902. */
+export function shouldAddChain(err: unknown): boolean {
+  return errorCode(err) === 4902 || nestedOriginalCode(err) === 4902
+}
+
 export function walletError(err: unknown): string {
-  if (errorCode(err) === 4001) return 'The wallet request was closed. Nothing was sent.'
+  if (errorCode(err) === 4001 || nestedOriginalCode(err) === 4001) return 'The wallet request was closed. Nothing was sent.'
   if (err && typeof err === 'object' && 'shortMessage' in err && typeof (err as { shortMessage: unknown }).shortMessage === 'string') {
     return (err as { shortMessage: string }).shortMessage
   }
@@ -149,9 +170,31 @@ function onAnnounce(event: Event): void {
   for (const listener of discoveryListeners) listener()
 }
 
+interface WatchedProvider {
+  provider: Eip1193Provider
+  onAccounts: () => void
+  onChain: () => void
+  onDisconnect: () => void
+}
+
+let watched: WatchedProvider | null = null
+
 function watch(provider: Eip1193Provider): void {
-  provider.on?.('accountsChanged', () => { void refreshWallet() })
-  provider.on?.('chainChanged', () => { void refreshWallet() })
+  if (watched) {
+    watched.provider.removeListener?.('accountsChanged', watched.onAccounts)
+    watched.provider.removeListener?.('chainChanged', watched.onChain)
+    watched.provider.removeListener?.('disconnect', watched.onDisconnect)
+  }
+  const onAccounts = () => { void refreshWallet() }
+  const onChain = () => { void refreshWallet() }
+  const onDisconnect = () => {
+    state = { provider: null, name: '', account: null, chainId: null }
+    emitWallet()
+  }
+  provider.on?.('accountsChanged', onAccounts)
+  provider.on?.('chainChanged', onChain)
+  provider.on?.('disconnect', onDisconnect)
+  watched = { provider, onAccounts, onChain, onDisconnect }
 }
 
 function emitWallet(): void {
@@ -179,4 +222,14 @@ function errorCode(err: unknown): number | undefined {
     return (err as { code: number }).code
   }
   return undefined
+}
+
+function nestedOriginalCode(err: unknown): number | undefined {
+  if (!err || typeof err !== 'object' || !('data' in err)) return undefined
+  const data = (err as { data?: unknown }).data
+  if (!data || typeof data !== 'object' || !('originalError' in data)) return undefined
+  const original = (data as { originalError?: unknown }).originalError
+  if (!original || typeof original !== 'object' || !('code' in original)) return undefined
+  const code = (original as { code?: unknown }).code
+  return typeof code === 'number' ? code : undefined
 }

@@ -23,7 +23,7 @@ export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promi
     settleSimulation(env, tx, decoded, deadline),
     settle('Registry', () => registrySignal(env, tx.chainId, addresses, deadline)),
     settle('Address reputation', () => checkAddresses(env, tx.chainId, addresses, deadline)),
-    settle('Token reputation', () => checkTokens(env, tx.chainId, tokens, deadline)),
+    settle('Token reputation', () => checkTokens(env, tx.chainId, tokens, deadline, tx.to)),
   ])
 
   const moreTokens = unique(sim.tokens)
@@ -33,7 +33,7 @@ export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promi
     .filter((address) => !addresses.includes(address))
     .slice(0, Math.max(0, ADDRESS_CAP - addresses.length))
   const [extraTokens, extraAddresses, extraRegistry] = await Promise.all([
-    moreTokens.length ? settle('Token reputation', () => checkTokens(env, tx.chainId, moreTokens, deadline)) : [],
+    moreTokens.length ? settle('Token reputation', () => checkTokens(env, tx.chainId, moreTokens, deadline, tx.to)) : [],
     moreAddresses.length
       ? settle('Address reputation', () => checkAddresses(env, tx.chainId, moreAddresses, deadline))
       : [],
@@ -53,15 +53,31 @@ export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promi
     ...extraRegistry,
     ...(tx.chainId === 97 ? [unsupportedTestnet()] : []),
   ])
-  const judged = judge(reasons)
+  const judged = applyReputationCap(judge(reasons), reasons)
   return {
     verdict: judged.verdict,
     score: judged.score,
+    complete: judged.complete,
     reasons,
     simulation: sim.simulation,
     explanation: await explain(env, judged.verdict, reasons, deadline),
     checkedAt: new Date().toISOString(),
   }
+}
+
+/** GoPlus and ScamSniffer misses stay `info` in the list, but the verdict cannot be safe. */
+function applyReputationCap(
+  judged: { verdict: Verdict; score: number },
+  reasons: Reason[],
+): { verdict: Verdict; score: number; complete: boolean } {
+  const complete = !reasons.some((reason) => reason.code === 'provider_failed' && reputationProvider(reason.message))
+  if (complete || judged.verdict !== 'safe') return { ...judged, complete }
+  return { verdict: 'warn', score: Math.min(judged.score, 85), complete: false }
+}
+
+function reputationProvider(message: string): boolean {
+  const name = message.split(' did not answer')[0]
+  return name === 'GoPlus' || name === 'ScamSniffer' || name === 'Address reputation' || name === 'Token reputation'
 }
 
 function unsupportedTestnet(): Reason {

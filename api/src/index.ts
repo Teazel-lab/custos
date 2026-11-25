@@ -9,12 +9,13 @@ import { reportFor } from './registry'
 import type { AppEnv, ChainId } from './types'
 
 export async function handle(request: Request, env: AppEnv): Promise<Response> {
+  const allowDev = env.ALLOW_DEV_ORIGINS === '1'
   try {
-    return withCors(request, await route(request, env))
+    return withCors(request, await route(request, env), allowDev)
   } catch (err) {
-    if (err instanceof HttpError) return withCors(request, json({ error: err.message }, err.status))
+    if (err instanceof HttpError) return withCors(request, json({ error: err.message }, err.status), allowDev)
     console.error(JSON.stringify({ error: 'unhandled' }))
-    return withCors(request, json({ error: 'Check failed.' }, 500))
+    return withCors(request, json({ error: 'Check failed.' }, 500), allowDev)
   }
 }
 
@@ -59,13 +60,17 @@ async function check(request: Request, env: AppEnv): Promise<Response> {
   }
   const result = await runCheck(env, tx)
   const encoded = JSON.stringify(result)
-  await cachePut(env.CACHE, cacheKey, encoded, 60)
+  // A provider miss must not sit in the 60s check cache, or the next identical request skips the retry.
+  if (!result.reasons.some((reason) => reason.code === 'provider_failed')) {
+    await cachePut(env.CACHE, cacheKey, encoded, 60)
+  }
   console.log(
     JSON.stringify({
       plan: access.plan,
       chainId: tx.chainId,
       verdict: result.verdict,
       score: result.score,
+      complete: result.complete,
       mode: result.simulation.mode,
       reasons: result.reasons.map((reason) => reason.code),
     }),

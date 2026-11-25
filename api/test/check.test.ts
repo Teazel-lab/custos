@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseTx, runCheck } from '../src/check'
-import { GOPLUS_TIMEOUT_MS } from '../src/reputation'
+import { GOPLUS_EMPTY_TTL, GOPLUS_RECORD_TTL, GOPLUS_TIMEOUT_MS } from '../src/reputation'
 import { handle } from '../src/index'
 import { WALLET_SENTENCE } from '../src/messages'
 import { clientKey } from '../src/ratelimit'
@@ -60,6 +60,7 @@ function testEnv(
     RPC_URL_56?: string
     RPC_URL_97?: string
     LLM_API_KEY?: string
+    ALLOW_DEV_ORIGINS?: string
   } = {},
 ): AppEnv & { CACHE: MemoryCache; CHECK_LIMIT: MemoryLimit } {
   return {
@@ -72,6 +73,7 @@ function testEnv(
     TRACE_RPC_URL_56: extra.TRACE_RPC_URL_56,
     TRACE_RPC_URL_97: extra.TRACE_RPC_URL_97,
     LLM_API_KEY: extra.LLM_API_KEY,
+    ALLOW_DEV_ORIGINS: extra.ALLOW_DEV_ORIGINS,
   }
 }
 
@@ -361,6 +363,7 @@ describe('POST /check', () => {
       const body = await response.json() as CheckBody
       expect(body.simulation.mode).toBe('simulate')
       expect(body.simulation.success).toBe(true)
+      expect(body.complete).toBe(true)
       expect(body.reasons.map((reason) => reason.code)).not.toContain('trace_unavailable')
     } finally {
       calls.restore()
@@ -497,14 +500,23 @@ describe('POST /check', () => {
       }), env)
       expect(options.status).toBe(204)
       expect(options.headers.get('Access-Control-Allow-Origin')).toBe('https://www.custosprotocol.com')
-      const local = await handle(new Request('https://custos.test/health', {
+      const localOff = await handle(new Request('https://custos.test/health', {
         headers: { Origin: 'http://localhost:5173' },
       }), env)
+      expect(localOff.headers.get('Access-Control-Allow-Origin')).toBeNull()
+      const dev = testEnv({ ALLOW_DEV_ORIGINS: '1' })
+      const local = await handle(new Request('https://custos.test/health', {
+        headers: { Origin: 'http://localhost:5173' },
+      }), dev)
       expect(local.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:5173')
       const loopback = await handle(new Request('https://custos.test/health', {
         headers: { Origin: 'http://127.0.0.1:4173' },
-      }), env)
+      }), dev)
       expect(loopback.headers.get('Access-Control-Allow-Origin')).toBe('http://127.0.0.1:4173')
+      const ipv6 = await handle(new Request('https://custos.test/health', {
+        headers: { Origin: 'http://[::1]:5173' },
+      }), dev)
+      expect(ipv6.headers.get('Access-Control-Allow-Origin')).toBe('http://[::1]:5173')
     } finally {
       calls.restore()
     }
@@ -948,14 +960,7 @@ describe('review regressions', () => {
     }
   })
 
-  it('gives GoPlus 8 seconds and caches a successful result', async () => {
-    const seen: number[] = []
-    const signalApi = AbortSignal as unknown as { timeout: (ms: number) => AbortSignal }
-    const original = signalApi.timeout
-    signalApi.timeout = (ms: number) => {
-      seen.push(ms)
-      return original.call(AbortSignal, ms)
-    }
+  it('caches a full GoPlus record for an hour', async () => {
     let addressCalls = 0
     let tokenCalls = 0
     const env = testEnv()
@@ -979,23 +984,24 @@ describe('review regressions', () => {
       },
     )
     try {
+      expect(GOPLUS_TIMEOUT_MS).toBe(8_000)
+      expect(GOPLUS_RECORD_TTL).toBe(3_600)
       const approval = encode('095ea7b3', [BigInt(SPENDER), 1n])
       const first = await post(env, tx(approval, 56))
       const firstBody = await first.json() as CheckBody
       expect(first.status).toBe(200)
+      expect(firstBody.complete).toBe(true)
       expect(firstBody.reasons.map((reason) => reason.code)).not.toContain('provider_failed')
-      expect(seen.filter((ms) => ms === GOPLUS_TIMEOUT_MS).length).toBeGreaterThanOrEqual(2)
-      expect(GOPLUS_TIMEOUT_MS).toBe(8_000)
+      expect(firstBody.reasons.map((reason) => reason.code)).not.toContain('unknown_token')
       const cached = [...env.CACHE.expirations.entries()].filter(([key]) => key.startsWith('goplus:'))
       expect(cached.length).toBeGreaterThan(0)
-      expect(cached.every(([, ttl]) => ttl === 3_600)).toBe(true)
+      expect(cached.every(([, ttl]) => ttl === GOPLUS_RECORD_TTL)).toBe(true)
       const after = { addressCalls, tokenCalls }
       const second = await post(env, tx(approval, 56, { from: SPENDER }))
       expect(second.status).toBe(200)
       expect(addressCalls).toBe(after.addressCalls)
       expect(tokenCalls).toBe(after.tokenCalls)
     } finally {
-      signalApi.timeout = original
       calls.restore()
     }
   })
@@ -1019,7 +1025,57 @@ describe('review regressions', () => {
     }
   })
 
-  it('keeps a clean simulated transfer safe when a provider fails', async () => {
+  it('retries the same check when GoPlus failed', async () => {
+    let hits = 0
+    const env = testEnv()
+    const calls = installFetch(undefined, (url) => {
+      if (!url.includes('/address_security/')) return undefined
+      hits += 1
+      throw new Error('goplus slow')
+    })
+    try {
+      const first = await post(env, tx('0x', 56))
+      const second = await post(env, tx('0x', 56))
+      expect(hits).toBe(2)
+      expect(first.status).toBe(200)
+      expect(second.status).toBe(200)
+      expect(((await first.json()) as CheckBody).reasons.map((reason) => reason.code)).toContain('provider_failed')
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('warns when the target token has no GoPlus record and caches that for 90 seconds', async () => {
+    const env = testEnv()
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') {
+          return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        }
+        return undefined
+      },
+      (url) => {
+        if (url.includes('/token_security/')) return { code: 1, result: {} }
+        if (url.includes('/address_security/')) return { code: 1, result: {} }
+        return undefined
+      },
+    )
+    try {
+      const response = await post(env, tx(encode('095ea7b3', [BigInt(SPENDER), 1n]), 56))
+      const body = await response.json() as CheckBody
+      expect(body.reasons.map((reason) => reason.code)).toContain('unknown_token')
+      expect(body.reasons.find((reason) => reason.code === 'unknown_token')?.severity).toBe('warn')
+      expect(body.complete).toBe(true)
+      expect(body.verdict).not.toBe('safe')
+      const ttls = Object.fromEntries([...env.CACHE.expirations.entries()].filter(([key]) => key.startsWith('goplus:')))
+      expect(Object.values(ttls).every((ttl) => ttl === GOPLUS_EMPTY_TTL)).toBe(true)
+      expect(GOPLUS_EMPTY_TTL).toBe(90)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('caps an incomplete reputation check at warn', async () => {
     const calls = installFetch(
       (body) => {
         if (body.method === 'eth_simulateV1') {
@@ -1038,8 +1094,9 @@ describe('review regressions', () => {
       const failed = body.reasons.find((reason) => reason.code === 'provider_failed')
       expect(failed?.severity).toBe('info')
       expect(body.simulation.mode).toBe('simulate')
-      expect(body.verdict).toBe('safe')
-      expect(body.score).toBe(100)
+      expect(body.complete).toBe(false)
+      expect(body.verdict).toBe('warn')
+      expect(body.score).toBe(85)
     } finally {
       calls.restore()
     }
@@ -1064,6 +1121,7 @@ describe('review regressions', () => {
 interface CheckBody {
   verdict: string
   score: number
+  complete: boolean
   reasons: { code: string; severity: string; message: string }[]
   simulation: {
     mode: string

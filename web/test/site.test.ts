@@ -1,7 +1,9 @@
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
-import { applyAddressPaste, buildCheckRequest, EXAMPLE_SENDER, reportUrl } from '../src/api'
+import { applyAddressPaste, buildCheckRequest, EXAMPLE_SENDER, parseCheckResponse, parseReportResponse, reportUrl, severityClass } from '../src/api'
+import { validateReportTarget } from '../src/chain'
 import { CHAINS, contractsReady } from '../src/config'
+import { shouldAddChain, transactionCall } from '../src/wallet'
 
 describe('addresses', () => {
   it('leaves mainnet hub and registry empty and keeps testnet filled', () => {
@@ -62,5 +64,56 @@ describe('check request', () => {
       data: '0x',
       value: '0',
     })).toThrow(/zero address/)
+  })
+})
+
+describe('response shape', () => {
+  it('rejects a check body that is missing the simulation', () => {
+    expect(() => parseCheckResponse({ verdict: 'safe', score: 100, reasons: [], explanation: 'x' })).toThrow(/expected shape/)
+  })
+
+  it('keeps a well formed check and ignores a bad reason', () => {
+    const parsed = parseCheckResponse({
+      verdict: 'warn',
+      score: 85,
+      complete: false,
+      explanation: 'Verdict: warn.',
+      checkedAt: '2026-11-25T00:00:00.000Z',
+      reasons: [{ code: 'provider_failed', severity: 'info', message: 'GoPlus did not answer.' }, { code: 1 }],
+      simulation: { mode: 'simulate', success: true, revertReason: null },
+    })
+    expect(parsed.complete).toBe(false)
+    expect(parsed.reasons).toHaveLength(1)
+    expect(parsed.simulation.mode).toBe('simulate')
+  })
+
+  it('rejects a registry body without reason counts', () => {
+    expect(() => parseReportResponse({ address: EXAMPLE_SENDER, chainId: 97, configured: true, reportCount: '0' })).toThrow(/expected shape/)
+  })
+
+  it('allowlists severity class names', () => {
+    expect(severityClass('warn')).toBe('warn')
+    expect(severityClass('danger')).toBe('danger')
+    expect(severityClass('"><img>')).toBe('neutral')
+  })
+})
+
+describe('wallet guards', () => {
+  it('rejects the zero address before a report is built', () => {
+    expect(() => validateReportTarget('0x0000000000000000000000000000000000000000')).toThrow(/zero address/)
+    expect(validateReportTarget(EXAMPLE_SENDER)).toBe(getAddress(EXAMPLE_SENDER))
+  })
+
+  it('puts the chain id on the transaction the wallet confirms', () => {
+    const call = transactionCall(getAddress(EXAMPLE_SENDER), getAddress(EXAMPLE_SENDER), '0x', 97)
+    expect(call.chainId).toBe('0x61')
+    expect(call.value).toBe('0x0')
+    expect(transactionCall(getAddress(EXAMPLE_SENDER), getAddress(EXAMPLE_SENDER), '0x', 56).chainId).toBe('0x38')
+  })
+
+  it('treats a nested 4902 as an unknown chain', () => {
+    expect(shouldAddChain({ code: 4902 })).toBe(true)
+    expect(shouldAddChain({ code: -32603, data: { originalError: { code: 4902 } } })).toBe(true)
+    expect(shouldAddChain({ code: 4001 })).toBe(false)
   })
 })

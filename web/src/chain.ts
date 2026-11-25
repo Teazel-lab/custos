@@ -29,12 +29,17 @@ export async function readAgent(chainId: ChainId, account: Address): Promise<Age
   })
   let handle: string | null = null
   if (chain.agentIdHasHandle && balance > 0n) {
-    handle = await client.readContract({
-      address: chain.agentId,
-      abi: agentIdAbi,
-      functionName: 'handleOf',
-      args: [account],
-    })
+    try {
+      const read = await client.readContract({
+        address: chain.agentId,
+        abi: agentIdAbi,
+        functionName: 'handleOf',
+        args: [account],
+      })
+      handle = read.length > 0 ? read : null
+    } catch {
+      handle = null
+    }
   }
   return { balance, handle, holds: balance > 0n }
 }
@@ -67,13 +72,35 @@ export async function reportTarget(
 ): Promise<string> {
   const registry = CHAINS[chainId].registry
   if (!registry) throw new Error('Mainnet reports are coming soon. The registry is not deployed yet.')
-  if (!isAddress(target)) throw new Error('Enter the address to report.')
+  const normalized = validateReportTarget(target)
+  let already = false
+  try {
+    already = await publicClient(chainId).readContract({
+      address: registry,
+      abi: registryAbi,
+      functionName: 'hasReported',
+      args: [account, normalized],
+    })
+  } catch (err) {
+    throw new Error(`Could not read whether you already reported this address. ${walletError(err)}`)
+  }
+  if (already) throw new Error('You already have an active report on this address. Retract it before filing another.')
   const data = encodeFunctionData({
     abi: registryAbi,
     functionName: 'report',
-    args: [getAddress(target), reason],
+    args: [normalized, reason],
   })
   return sendTransaction(provider, account, registry, data, chainId)
+}
+
+const ZERO_ADDRESS = getAddress('0x0000000000000000000000000000000000000000')
+
+/** Rejects a missing or zero target before any transaction is built. */
+export function validateReportTarget(target: string): Address {
+  if (!isAddress(target)) throw new Error('Enter the address to report.')
+  const normalized = getAddress(target)
+  if (normalized === ZERO_ADDRESS) throw new Error('The zero address cannot be reported.')
+  return normalized
 }
 
 export function chainError(err: unknown): string {

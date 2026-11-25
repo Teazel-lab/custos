@@ -1,3 +1,7 @@
+import '@fontsource/fraunces/latin-600.css'
+import '@fontsource/outfit/latin-400.css'
+import '@fontsource/outfit/latin-500.css'
+import '@fontsource/outfit/latin-600.css'
 import { GITHUB_URL } from './config'
 import { el, externalLink, shortAddress } from './dom'
 import { renderActivate, renderLanding, renderMissing, renderReport, renderScanner } from './pages'
