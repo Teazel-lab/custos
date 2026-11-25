@@ -152,3 +152,64 @@ Chain 97 uses the deployed `MockAgentID` address as the constructor argument and
 forge verify-contract --chain bsc-testnet --watch \
   "$MOCK" script/mocks/MockAgentID.sol:MockAgentID
 ```
+
+## Check API
+
+`api/` is a Cloudflare Worker. `POST /check` inspects a transaction an agent is about to sign and returns a verdict. It never accepts a key or seed, never signs, and never broadcasts. The caller still confirms the transaction in their own wallet.
+
+The live chain 97 contracts are CustosHub `0x062D0452187094C1B2dd546B6a793A50eBDBfd06`, CustosRegistry `0x14df99CEa96C8f0980cA0aF46CB5d30de782353A`, and MockAgentID `0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945`. Chain 56 registry reads stay unwired until that deployment exists.
+
+`POST /check` takes `{ "chainId": 56 or 97, "from", "to", "data", "value" }`. `value` is a decimal or hex string. The response is `{ verdict, score, reasons, simulation, explanation, checkedAt }`. `verdict` is `safe`, `warn`, or `danger`. `simulation.mode` is `trace` when `debug_traceCall` succeeded and `call` when the check used `eth_call` plus `eth_estimateGas`. Call mode still decodes approve, increaseAllowance, setApprovalForAll, permit, transferFrom, and Permit2 from the calldata. Trace mode also decodes Transfer and Approval logs.
+
+`GET /health` returns `{ "ok": true }`. `GET /report/:address?chainId=97` returns that address's registry counts. `chainId` defaults to 97.
+
+Signals run together. A provider that times out or errors becomes a `warn` reason and the rest of the check still finishes. Token and address reputation use honeypot.is, GoPlus, and the public ScamSniffer blacklist. An optional OpenAI-compatible model may rewrite the explanation. It cannot change `verdict`; a missing key or a bad reply falls back to a template. The explanation always says to confirm the transaction in the caller's own wallet.
+
+Results are cached in KV: about 60 seconds for a check, longer for token, address, and blacklist data. Requests are limited to 60 per IP per minute. The API is free and keyless. `authorize()` is the place a later plan check would read `Authorization`.
+
+Browser calls are allowed from `https://custosprotocol.com` and `https://www.custosprotocol.com`.
+
+### Setup
+
+```bash
+cd api
+npm install
+cp .dev.vars.example .dev.vars
+```
+
+Put secrets in `.dev.vars` for local dev, or in production with `wrangler secret put`. Do not commit them.
+
+| Name | Required | Purpose |
+| --- | --- | --- |
+| `RPC_URL` | Recommended | Plain JSON-RPC. Alchemy BSC looks like `https://bnb-mainnet.g.alchemy.com/v2/<key>` (testnet: `https://bnb-testnet.g.alchemy.com/v2/<key>`). If empty, chain 56 uses `https://bsc.publicnode.com` and chain 97 uses `https://bsc-testnet.publicnode.com`. |
+| `TRACE_RPC_URL` | No | `debug_traceCall` with `callTracer` and logs. Any provider URL works; nothing in the code is tied to one vendor. If this is empty or the call errors, the check falls back to `RPC_URL`. |
+| `LLM_API_KEY` | No | Explanation rewrite only. |
+| `LLM_BASE_URL`, `LLM_MODEL` | No | Non-secret Worker vars. Defaults are `https://api.openai.com/v1` and `gpt-4o-mini`. |
+
+Create the cache and replace the placeholder id in `api/wrangler.jsonc`:
+
+```bash
+npx wrangler kv namespace create CUSTOS_CACHE
+```
+
+The binding name is `CACHE`.
+
+```bash
+npm test
+npm run typecheck
+npx wrangler dev
+```
+
+`wrangler dev` serves `http://localhost:8787`. This repo does not deploy the Worker.
+
+```bash
+curl -s http://localhost:8787/health
+
+curl -s http://localhost:8787/report/0x0000000000000000000000000000000000000002?chainId=97
+
+curl -s -X POST http://localhost:8787/check \
+  -H 'content-type: application/json' \
+  -d '{"chainId":97,"from":"0x0000000000000000000000000000000000000001","to":"0x0000000000000000000000000000000000000002","data":"0x","value":"0"}'
+```
+
+Point `RPC_URL` at one network at a time. A mainnet Alchemy URL will not answer chain 97 reads.

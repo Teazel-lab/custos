@@ -8,3 +8,8 @@ contracts/cache/
 contracts/out/
 contracts/broadcast/
 contracts/lib/
+
+# Check API
+api/node_modules/
+api/.wrangler/
+api/.dev.vars
