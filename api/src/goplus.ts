@@ -1,39 +1,76 @@
 import { cacheGet, cachePut } from './cache'
-import type { AppEnv } from './types'
+import type { AppEnv, KvStore } from './types'
 
-/** Official token endpoint. https://docs.gopluslabs.io/reference/getaccesstokenusingpost */
+/**
+ * Token endpoint and signature: https://docs.gopluslabs.io/reference/getaccesstokenusingpost
+ * `expires_in` is a duration in seconds: https://docs.gopluslabs.io/reference/response-details-10
+ * Security calls want `Authorization: Bearer <access_token>`:
+ * https://docs.gopluslabs.io/reference/tokensecurityusingget_1
+ *
+ * Numeric `code` values are not on those pages. The official Node SDK lists
+ * 4010 app key missing, 4011 signature expired, 4012 signature mismatch,
+ * 4022 invalid token, and 4029 over the rate limit
+ * (GoPlusSecurity/goplus-sdk-node `src/script/errorcode.js`).
+ */
 export const GOPLUS_TOKEN_URL = 'https://api.gopluslabs.io/api/v1/token'
 export const GOPLUS_TIMEOUT_MS = 8_000
-/** Leave the KV entry a minute shorter than `expires_in` so a cached token is not used on its last second. */
+/** A cold token must not consume the whole security budget. */
+export const GOPLUS_TOKEN_TIMEOUT_MS = 3_000
+/** Leave the KV entry a minute shorter than `expires_in`. */
 export const GOPLUS_TOKEN_SKEW_SECONDS = 60
+export const GOPLUS_TOKEN_MIN_TTL = 60
+/** Used when GoPlus omits `expires_in`. */
+export const GOPLUS_TOKEN_DEFAULT_TTL = 300
+/** `expires_in` is seconds, but a huge value must not pin a dead token for years. */
+export const GOPLUS_TOKEN_MAX_TTL = 86_400
+/** Skip `/token` for a couple of minutes after a transport or edge failure. */
+export const GOPLUS_TOKEN_BACKOFF_SECONDS = 120
+/** A bad key or signature will not start working on the next check. */
+export const GOPLUS_CREDENTIAL_BACKOFF_SECONDS = 3_600
 export const PROVIDER_USER_AGENT = 'CustosProtocol/1.0 (+https://api.custosprotocol.com)'
 
 const TOKEN_PREFIX = 'goplus:auth:'
 
-/**
- * One token fetch at a time for this isolate. The promise is cleared when it
- * settles, so the access token is not kept in module state.
- */
-let inflight: Promise<string> | undefined
-let refreshing: Promise<string> | undefined
+interface TokenSlot {
+  inflight?: Promise<string | undefined>
+  refreshing?: Promise<string | undefined>
+  /** Latest token minted for this KV store. Not used once that store has a newer value. */
+  current?: string
+}
+
+/** One in-flight token fetch per cache binding, so two tests do not share a token. */
+const slots = new WeakMap<object, Map<string, TokenSlot>>()
 
 export class ProviderError extends Error {
   readonly detail: string
-  /** True when a new access token might make the same GoPlus call succeed. */
+  /** True when a different access token might make this same GoPlus call succeed. */
   readonly auth: boolean
+  /** True when the app key or signature was rejected. */
+  readonly credential: boolean
 
-  constructor(detail: string, auth = false) {
+  constructor(detail: string, auth = false, credential = false) {
     super(detail)
     this.name = 'ProviderError'
     this.detail = detail
     this.auth = auth
+    this.credential = credential
   }
 }
 
 export function providerDetail(err: unknown, name: string): string {
   if (err instanceof ProviderError) return err.detail
   if (isTimeout(err)) return `${name} timeout`
-  return `${name} network error`
+  if (err instanceof TypeError) return `${name} network error`
+  return `${name} error`
+}
+
+export function isTimeout(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
+}
+
+export function linked(parent: AbortSignal | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms)
+  return parent ? AbortSignal.any([parent, timeout]) : timeout
 }
 
 /** `sha1(app_key + time + app_secret)` as lowercase hex. `time` is unix seconds. */
@@ -43,19 +80,18 @@ export async function signGoPlus(appKey: string, time: number, appSecret: string
 }
 
 /**
- * KV rejects an expiration under 60 seconds. Skip the cache rather than keep a
- * token that may already be expired by the time that minimum elapses.
+ * KV rejects an expiration under 60 seconds. A missing or short `expires_in`
+ * still overwrites any previous token, and a huge value is capped at one day.
  */
-export function goplusTokenTtl(expiresIn: unknown): number | undefined {
+export function goplusTokenTtl(expiresIn: unknown): number {
   const seconds = typeof expiresIn === 'number'
     ? expiresIn
     : typeof expiresIn === 'string' && /^\d+$/.test(expiresIn)
       ? Number(expiresIn)
       : NaN
-  if (!Number.isFinite(seconds)) return undefined
+  if (!Number.isFinite(seconds) || seconds <= 0) return GOPLUS_TOKEN_DEFAULT_TTL
   const ttl = Math.floor(seconds) - GOPLUS_TOKEN_SKEW_SECONDS
-  if (ttl < 60) return undefined
-  return ttl
+  return Math.min(Math.max(ttl, GOPLUS_TOKEN_MIN_TTL), GOPLUS_TOKEN_MAX_TTL)
 }
 
 export function providerHeaders(authorization?: string): Record<string, string> {
@@ -63,8 +99,7 @@ export function providerHeaders(authorization?: string): Record<string, string> 
     Accept: 'application/json',
     'User-Agent': PROVIDER_USER_AGENT,
   }
-  // The official Node SDK sets this header to `result.access_token` with no Bearer prefix.
-  if (authorization) headers.Authorization = authorization
+  if (authorization) headers.Authorization = `Bearer ${authorization}`
   return headers
 }
 
@@ -79,6 +114,11 @@ interface GoPlusCreds {
   appSecret: string
 }
 
+interface IssuedToken {
+  accessToken: string
+  expiresIn: unknown
+}
+
 /** Both secrets are required. One of them, or a blank value, keeps the unauthenticated call. */
 function goplusCredentials(env: AppEnv): GoPlusCreds | undefined {
   const appKey = env.GOPLUS_APP_KEY?.trim()
@@ -88,39 +128,107 @@ function goplusCredentials(env: AppEnv): GoPlusCreds | undefined {
 }
 
 export async function fetchGoPlus(env: AppEnv, url: string, signal?: AbortSignal): Promise<GoPlusBody> {
-  const authorization = await accessToken(env, signal, false)
+  const authorization = await accessToken(env, signal)
   try {
     return await requestGoPlus(env, url, authorization, signal)
   } catch (err) {
     if (!(err instanceof ProviderError) || !err.auth || !authorization) throw err
-    const refreshed = await accessToken(env, signal, true)
+    const refreshed = await accessToken(env, signal, authorization)
+    if (refreshed === authorization) throw err
     return requestGoPlus(env, url, refreshed, signal)
   }
 }
 
-async function accessToken(env: AppEnv, signal: AbortSignal | undefined, refresh: boolean): Promise<string | undefined> {
+async function accessToken(env: AppEnv, signal: AbortSignal | undefined, failed?: string): Promise<string | undefined> {
   const creds = goplusCredentials(env)
   if (!creds) return undefined
-  if (refresh) {
-    refreshing ??= requestToken(env, creds, signal).finally(() => {
-      refreshing = undefined
-    })
-    return refreshing
-  }
-  inflight ??= loadToken(env, creds, signal).finally(() => {
-    inflight = undefined
-  })
-  return inflight
-}
-
-async function loadToken(env: AppEnv, creds: GoPlusCreds, signal: AbortSignal | undefined): Promise<string> {
   const cacheKey = await tokenCacheKey(creds.appKey)
-  const hit = await cacheGet(env.CACHE, cacheKey)
-  if (hit) return hit
-  return requestToken(env, creds, signal)
+  const slot = slotFor(env.CACHE, cacheKey)
+  const shared = failed ? refreshShared(env, creds, cacheKey, slot, failed) : loadShared(env, creds, cacheKey, slot)
+  return watch(shared, signal)
 }
 
-async function requestToken(env: AppEnv, creds: GoPlusCreds, signal: AbortSignal | undefined): Promise<string> {
+function loadShared(env: AppEnv, creds: GoPlusCreds, cacheKey: string, slot: TokenSlot): Promise<string | undefined> {
+  if (!slot.inflight) {
+    const pending = readOrMint(env, creds, cacheKey, slot)
+    slot.inflight = pending
+    void pending.finally(() => {
+      if (slot.inflight === pending) slot.inflight = undefined
+    })
+  }
+  return slot.inflight
+}
+
+function refreshShared(
+  env: AppEnv,
+  creds: GoPlusCreds,
+  cacheKey: string,
+  slot: TokenSlot,
+  failed: string,
+): Promise<string | undefined> {
+  if (slot.current && slot.current !== failed) return Promise.resolve(slot.current)
+  if (!slot.refreshing) {
+    const pending = (async () => {
+      const newer = await newerToken(env, cacheKey, slot, failed)
+      if (newer !== undefined) return newer
+      if (await backedOff(env, cacheKey)) return undefined
+      return mint(env, creds, cacheKey, slot)
+    })()
+    slot.refreshing = pending
+    void pending.finally(() => {
+      if (slot.refreshing === pending) slot.refreshing = undefined
+    })
+  }
+  return slot.refreshing
+}
+
+async function readOrMint(env: AppEnv, creds: GoPlusCreds, cacheKey: string, slot: TokenSlot): Promise<string | undefined> {
+  const newer = await newerToken(env, cacheKey, slot)
+  if (newer !== undefined) return newer
+  if (await backedOff(env, cacheKey)) return undefined
+  return mint(env, creds, cacheKey, slot)
+}
+
+/** A cached token that is not the one that just failed. `undefined` means mint or skip. */
+async function newerToken(env: AppEnv, cacheKey: string, slot: TokenSlot, failed?: string): Promise<string | undefined> {
+  if (await backedOff(env, cacheKey)) return undefined
+  const cached = await cacheGet(env.CACHE, cacheKey)
+  if (cached && cached !== failed) {
+    slot.current = cached
+    return cached
+  }
+  if (slot.current && slot.current !== failed) return slot.current
+  return undefined
+}
+
+async function backedOff(env: AppEnv, cacheKey: string): Promise<boolean> {
+  return (await cacheGet(env.CACHE, failKey(cacheKey))) !== null
+}
+
+/**
+ * The token POST uses its own 3s timeout, not the caller's deadline, so one
+ * check disconnecting does not abort the fetch another check is waiting on.
+ * Any failure falls back to an unauthenticated call and is remembered in KV.
+ */
+async function mint(env: AppEnv, creds: GoPlusCreds, cacheKey: string, slot: TokenSlot): Promise<string | undefined> {
+  try {
+    const issued = await requestToken(creds)
+    slot.current = issued.accessToken
+    await cachePut(env.CACHE, cacheKey, issued.accessToken, goplusTokenTtl(issued.expiresIn))
+    return issued.accessToken
+  } catch (err) {
+    const credential = err instanceof ProviderError && err.credential
+    await cachePut(
+      env.CACHE,
+      failKey(cacheKey),
+      credential ? 'credential' : 'transient',
+      credential ? GOPLUS_CREDENTIAL_BACKOFF_SECONDS : GOPLUS_TOKEN_BACKOFF_SECONDS,
+    )
+    return undefined
+  }
+}
+
+async function requestToken(creds: GoPlusCreds): Promise<IssuedToken> {
   const time = Math.floor(Date.now() / 1000)
   const sign = await signGoPlus(creds.appKey, time, creds.appSecret)
   const secrets = [creds.appKey, creds.appSecret, sign]
@@ -133,7 +241,7 @@ async function requestToken(env: AppEnv, creds: GoPlusCreds, signal: AbortSignal
         'content-type': 'application/json',
       },
       body: JSON.stringify({ app_key: creds.appKey, time, sign }),
-      signal: linked(signal, GOPLUS_TIMEOUT_MS),
+      signal: AbortSignal.timeout(GOPLUS_TOKEN_TIMEOUT_MS),
     })
   } catch (err) {
     const timeout = isTimeout(err)
@@ -150,11 +258,9 @@ async function requestToken(env: AppEnv, creds: GoPlusCreds, signal: AbortSignal
       code: loggedCode(body?.code),
       message: clipMessage(body?.message, secrets),
     })
-    throw new ProviderError(detail)
+    throw new ProviderError(detail, false, isCredentialCode(body?.code))
   }
-  const ttl = goplusTokenTtl(token.expiresIn)
-  if (ttl !== undefined) await cachePut(env.CACHE, await tokenCacheKey(creds.appKey), token.accessToken, ttl)
-  return token.accessToken
+  return token
 }
 
 async function requestGoPlus(
@@ -164,7 +270,7 @@ async function requestGoPlus(
   signal: AbortSignal | undefined,
 ): Promise<GoPlusBody> {
   const creds = goplusCredentials(env)
-  const secrets = [creds?.appKey, creds?.appSecret, authorization].filter((value): value is string => !!value)
+  const secrets = [creds?.appKey, creds?.appSecret, authorization].filter((value): value is string => Boolean(value))
   let response: Response
   try {
     response = await fetch(url, {
@@ -190,12 +296,31 @@ async function requestGoPlus(
   return body ?? {}
 }
 
+function slotFor(kv: KvStore, cacheKey: string): TokenSlot {
+  const store = kv as object
+  let table = slots.get(store)
+  if (!table) {
+    table = new Map()
+    slots.set(store, table)
+  }
+  let slot = table.get(cacheKey)
+  if (!slot) {
+    slot = {}
+    table.set(cacheKey, slot)
+  }
+  return slot
+}
+
 async function tokenCacheKey(appKey: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(appKey))
   return `${TOKEN_PREFIX}${hex(digest).slice(0, 16)}`
 }
 
-function tokenValue(result: unknown): { accessToken: string; expiresIn: unknown } | undefined {
+function failKey(cacheKey: string): string {
+  return `${cacheKey}:fail`
+}
+
+function tokenValue(result: unknown): IssuedToken | undefined {
   if (!result || typeof result !== 'object') return undefined
   const record = result as { access_token?: unknown; expires_in?: unknown }
   const accessToken = record.access_token
@@ -209,10 +334,21 @@ function successCode(code: unknown): boolean {
   return code === 1 || code === '1'
 }
 
-/** 4022 is GoPlus `INVALID_TOKEN`. 401 and 403 are the HTTP auth failures. */
+/**
+ * Refresh on HTTP 401 and on GoPlus 4022 (invalid token), including a 403
+ * whose JSON says 4022. A bare 403 is treated as edge blocking, not a bad token.
+ */
 function isAuthFailure(status: number, code: unknown): boolean {
-  if (status === 401 || status === 403) return true
+  if (isInvalidToken(code)) return true
+  return status === 401
+}
+
+function isInvalidToken(code: unknown): boolean {
   return code === 4022 || code === '4022'
+}
+
+function isCredentialCode(code: unknown): boolean {
+  return code === 4010 || code === '4010' || code === 4011 || code === '4011' || code === 4012 || code === '4012'
 }
 
 function codeLabel(code: unknown): string {
@@ -228,9 +364,7 @@ function loggedCode(code: unknown): string | undefined {
 
 async function readBody(response: Response): Promise<GoPlusBody | undefined> {
   try {
-    const text = await response.text()
-    if (text.length > 1_000_000) return undefined
-    const parsed = JSON.parse(text) as unknown
+    const parsed = JSON.parse(await response.text()) as unknown
     if (!parsed || typeof parsed !== 'object') return undefined
     return parsed as GoPlusBody
   } catch {
@@ -253,22 +387,27 @@ export function logProviderFailure(
 
 function clipMessage(value: unknown, secrets: string[]): string | undefined {
   if (typeof value !== 'string') return undefined
-  let text = value.replace(/\s+/g, ' ').trim().slice(0, 180)
+  let text = value.replace(/\s+/g, ' ').trim()
   if (!text) return undefined
   for (const secret of secrets) {
-    if (secret.length < 8) continue
+    if (secret.length === 0) continue
     text = text.split(secret).join('[redacted]')
   }
-  return text
+  return text.slice(0, 180)
 }
 
-function isTimeout(err: unknown): boolean {
-  return err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
+function watch<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(abortReason(signal))
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
+  })
 }
 
-function linked(parent: AbortSignal | undefined, ms: number): AbortSignal {
-  const timeout = AbortSignal.timeout(ms)
-  return parent ? AbortSignal.any([parent, timeout]) : timeout
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new DOMException('This operation was aborted', 'AbortError')
 }
 
 function hex(buffer: ArrayBuffer): string {

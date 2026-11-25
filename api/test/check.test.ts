@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { parseTx, runCheck } from '../src/check'
-import { GOPLUS_TOKEN_SKEW_SECONDS, GOPLUS_TOKEN_URL, goplusTokenTtl, PROVIDER_USER_AGENT, signGoPlus } from '../src/goplus'
+import {
+  fetchGoPlus,
+  GOPLUS_CREDENTIAL_BACKOFF_SECONDS,
+  GOPLUS_TOKEN_BACKOFF_SECONDS,
+  GOPLUS_TOKEN_DEFAULT_TTL,
+  GOPLUS_TOKEN_MAX_TTL,
+  GOPLUS_TOKEN_SKEW_SECONDS,
+  GOPLUS_TOKEN_URL,
+  goplusTokenTtl,
+  PROVIDER_USER_AGENT,
+  providerDetail,
+  signGoPlus,
+} from '../src/goplus'
 import { GOPLUS_EMPTY_TTL, GOPLUS_RECORD_TTL, GOPLUS_TIMEOUT_MS } from '../src/reputation'
 import { handle } from '../src/index'
 import { WALLET_SENTENCE } from '../src/messages'
@@ -939,7 +951,7 @@ describe('review regressions', () => {
     const calls = installFetch(undefined, (url) => {
       if (!url.startsWith('https://raw.githubusercontent.com/scamsniffer/')) return undefined
       downloads += 1
-      throw new Error('scam down')
+      throw new TypeError('scam down')
     })
     try {
       const env = testEnv()
@@ -1096,7 +1108,7 @@ describe('review regressions', () => {
         return undefined
       },
       (url) => {
-        if (url.startsWith('https://raw.githubusercontent.com/scamsniffer/')) throw new Error('scam down')
+        if (url.startsWith('https://raw.githubusercontent.com/scamsniffer/')) throw new TypeError('scam down')
         return undefined
       },
     )
@@ -1159,8 +1171,12 @@ describe('GoPlus auth', () => {
     expect(goplusTokenTtl(7200)).toBe(7200 - GOPLUS_TOKEN_SKEW_SECONDS)
     expect(goplusTokenTtl('7200')).toBe(7140)
     expect(goplusTokenTtl(120)).toBe(60)
-    expect(goplusTokenTtl(119)).toBeUndefined()
+    expect(goplusTokenTtl(119)).toBe(60)
+    expect(goplusTokenTtl(undefined)).toBe(GOPLUS_TOKEN_DEFAULT_TTL)
+    expect(goplusTokenTtl(9_999_999_999)).toBe(GOPLUS_TOKEN_MAX_TTL)
     expect(GOPLUS_TOKEN_SKEW_SECONDS).toBe(60)
+    expect(providerDetail(new SyntaxError('bad json'), 'GoPlus')).toBe('GoPlus error')
+    expect(providerDetail(new TypeError('fetch failed'), 'GoPlus')).toBe('GoPlus network error')
   })
 
   it('sends a User-Agent and skips the token call when secrets are absent', async () => {
@@ -1219,14 +1235,14 @@ describe('GoPlus auth', () => {
       expect(first.status).toBe(200)
       expect(JSON.parse(firstText).complete).toBe(true)
       expect(tokenPosts).toBe(1)
-      expect(authorizations).toEqual([ACCESS_TOKEN])
+      expect(authorizations).toEqual([`Bearer ${ACCESS_TOKEN}`])
       const ttl = [...env.CACHE.expirations.entries()].find(([key]) => key.startsWith('goplus:auth:'))?.[1]
       expect(ttl).toBe(7140)
       const second = await post(env, tx('0x', 56, { to: SPENDER }))
       const secondText = await second.text()
       expect(second.status).toBe(200)
       expect(tokenPosts).toBe(1)
-      expect(authorizations).toEqual([ACCESS_TOKEN, ACCESS_TOKEN])
+      expect(authorizations).toEqual([`Bearer ${ACCESS_TOKEN}`, `Bearer ${ACCESS_TOKEN}`])
       expectNoSecrets(`${firstText}\n${secondText}\n${logs.join('\n')}`)
     } finally {
       console.log = original
@@ -1260,7 +1276,7 @@ describe('GoPlus auth', () => {
       expect(body.reasons.map((reason) => reason.code)).not.toContain('provider_failed')
       expect(tokenPosts).toBe(2)
       expect(addressCalls).toBe(2)
-      expect(authorizations).toEqual([ACCESS_TOKEN, ROTATED_TOKEN])
+      expect(authorizations).toEqual([`Bearer ${ACCESS_TOKEN}`, `Bearer ${ROTATED_TOKEN}`])
       expectNoSecrets(text)
     } finally {
       calls.restore()
@@ -1278,7 +1294,7 @@ describe('GoPlus auth', () => {
         return { code: 1, result: { access_token: ACCESS_TOKEN, expires_in: 7200 } }
       }
       if (url.includes('/address_security/')) {
-        return new Response(JSON.stringify({ code: 4029, message: `limit ${APP_SECRET} ${ACCESS_TOKEN}` }), {
+        return new Response(JSON.stringify({ code: 4029, message: `${'y'.repeat(170)}${APP_SECRET}${ACCESS_TOKEN}` }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         })
@@ -1319,21 +1335,166 @@ describe('GoPlus auth', () => {
     }
   })
 
-  it('reports an HTTP status and a timeout without calling GoPlus when the token request fails', async () => {
-    const blocked = installFetch(undefined, (url) => {
-      if (url === GOPLUS_TOKEN_URL) return new Response('blocked', { status: 403 })
-      if (url.includes('gopluslabs.io')) throw new Error('should not call security without a token')
+  it('falls back to an unauthenticated GoPlus call and remembers a token failure', async () => {
+    const env = testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET })
+    let tokenPosts = 0
+    const authorizations: Array<string | undefined> = []
+    const calls = installFetch(undefined, (url, init) => {
+      if (url === GOPLUS_TOKEN_URL) {
+        tokenPosts += 1
+        return new Response('blocked', { status: 403 })
+      }
+      if (url.includes('/address_security/')) {
+        authorizations.push(headerValue(init, 'Authorization'))
+        return { code: 1, result: { phishing_activities: '0' } }
+      }
+      return undefined
+    })
+    try {
+      const first = await post(env, tx('0x', 56))
+      const firstBody = await first.json() as CheckBody
+      expect(firstBody.complete).toBe(true)
+      expect(firstBody.reasons.map((reason) => reason.code)).not.toContain('provider_failed')
+      expect(tokenPosts).toBe(1)
+      expect(authorizations).toEqual([undefined])
+      const marker = [...env.CACHE.expirations.entries()].find(([key]) => key.startsWith('goplus:auth:') && key.endsWith(':fail'))
+      expect(marker?.[1]).toBe(GOPLUS_TOKEN_BACKOFF_SECONDS)
+      const second = await post(env, tx('0x', 56, { to: SPENDER }))
+      const secondBody = await second.json() as CheckBody
+      expect(secondBody.complete).toBe(true)
+      expect(tokenPosts).toBe(1)
+      expect(authorizations).toEqual([undefined, undefined])
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('backs off longer when GoPlus rejects the app signature', async () => {
+    const env = testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET })
+    const calls = installFetch(undefined, (url) => {
+      if (url === GOPLUS_TOKEN_URL) return { code: 4012, message: 'signature' }
+      if (url.includes('/address_security/')) return { code: 1, result: {} }
+      return undefined
+    })
+    try {
+      const response = await post(env, tx('0x', 56))
+      const body = await response.json() as CheckBody
+      expect(body.complete).toBe(true)
+      const marker = [...env.CACHE.expirations.entries()].find(([key]) => key.endsWith(':fail'))
+      expect(marker?.[1]).toBe(GOPLUS_CREDENTIAL_BACKOFF_SECONDS)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('does not refresh a token after a bare GoPlus 403', async () => {
+    let tokenPosts = 0
+    let addressCalls = 0
+    const calls = installFetch(undefined, (url) => {
+      if (url === GOPLUS_TOKEN_URL) {
+        tokenPosts += 1
+        return { code: 1, result: { access_token: ACCESS_TOKEN, expires_in: 7200 } }
+      }
+      if (url.includes('/address_security/')) {
+        addressCalls += 1
+        return new Response('blocked', { status: 403 })
+      }
       return undefined
     })
     try {
       const response = await post(testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET }), tx('0x', 56))
       const body = await response.json() as CheckBody
       expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus HTTP 403')
-      expect(body.complete).toBe(false)
+      expect(tokenPosts).toBe(1)
+      expect(addressCalls).toBe(1)
     } finally {
-      blocked.restore()
+      calls.restore()
     }
+  })
 
+  it('caches a token that omits expires_in and reuses it', async () => {
+    const env = testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET })
+    let tokenPosts = 0
+    const calls = installFetch(undefined, (url) => {
+      if (url === GOPLUS_TOKEN_URL) {
+        tokenPosts += 1
+        return { code: 1, result: { access_token: ACCESS_TOKEN } }
+      }
+      if (url.includes('/address_security/')) return { code: 1, result: {} }
+      return undefined
+    })
+    try {
+      await post(env, tx('0x', 56))
+      const ttl = [...env.CACHE.expirations.entries()].find(([key]) => key.startsWith('goplus:auth:') && !key.endsWith(':fail'))?.[1]
+      expect(ttl).toBe(GOPLUS_TOKEN_DEFAULT_TTL)
+      await post(env, tx('0x', 56, { to: SPENDER }))
+      expect(tokenPosts).toBe(1)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('shares one refresh across concurrent auth failures and reuses the newer token', async () => {
+    const env = testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET })
+    let tokenPosts = 0
+    let held = false
+    let releaseLate: () => void = () => {}
+    const late = new Promise<void>((resolve) => {
+      releaseLate = resolve
+    })
+    const calls = installFetch(undefined, async (url, init) => {
+      if (url === GOPLUS_TOKEN_URL) {
+        tokenPosts += 1
+        const token = tokenPosts === 1 ? ACCESS_TOKEN : ROTATED_TOKEN
+        return { code: 1, result: { access_token: token, expires_in: 7200 } }
+      }
+      if (!url.includes('/address_security/')) return undefined
+      if (headerValue(init, 'Authorization') !== `Bearer ${ACCESS_TOKEN}`) return { code: 1, result: {} }
+      if (!held) {
+        held = true
+        await late
+      }
+      return { code: 4022, message: 'invalid token' }
+    })
+    try {
+      const first = fetchGoPlus(env, `https://api.gopluslabs.io/api/v1/address_security/${USER}?chain_id=56`)
+      const second = fetchGoPlus(env, `https://api.gopluslabs.io/api/v1/address_security/${SPENDER}?chain_id=56`)
+      const deadline = Date.now() + 1_000
+      while (tokenPosts < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5))
+      expect(tokenPosts).toBe(2)
+      releaseLate()
+      const [left, right] = await Promise.all([first, second])
+      expect(left.code).toBe(1)
+      expect(right.code).toBe(1)
+      expect(tokenPosts).toBe(2)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('remembers a ScamSniffer timeout for the next check', async () => {
+    const env = testEnv()
+    let downloads = 0
+    const calls = installFetch(undefined, (url) => {
+      if (!url.startsWith('https://raw.githubusercontent.com/scamsniffer/')) return undefined
+      downloads += 1
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+    })
+    try {
+      const first = await post(env, tx())
+      const second = await post(env, tx('0x', 97, { to: SPENDER }))
+      const firstBody = await first.json() as CheckBody
+      const secondBody = await second.json() as CheckBody
+      expect(downloads).toBe(1)
+      expect(env.CACHE.expirations.get('scam:fail')).toBe(300)
+      expect(firstBody.reasons.find((reason) => reason.message.startsWith('ScamSniffer'))?.message).toContain('ScamSniffer timeout')
+      expect(secondBody.reasons.find((reason) => reason.message.startsWith('ScamSniffer'))?.message).toContain('ScamSniffer timeout')
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('reports a GoPlus timeout when the security call times out', async () => {
     const timedOut = installFetch(undefined, (url) => {
       if (!url.includes('/address_security/')) return undefined
       throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')

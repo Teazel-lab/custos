@@ -1,6 +1,6 @@
 import { isAddress } from './abi'
 import { cacheGet, cachePut } from './cache'
-import { fetchGoPlus, logProviderFailure, ProviderError, providerDetail, providerHeaders } from './goplus'
+import { fetchGoPlus, isTimeout, linked, logProviderFailure, ProviderError, providerDetail, providerHeaders } from './goplus'
 import { providerReason } from './messages'
 import type { AppEnv, ChainId, Reason } from './types'
 
@@ -243,9 +243,11 @@ async function scamHits(env: AppEnv, addresses: string[], signal?: AbortSignal):
   } catch (err) {
     const detail = providerDetail(err, 'ScamSniffer')
     if (!(err instanceof ProviderError)) {
-      logProviderFailure('ScamSniffer', { error: isTimeout(err) ? 'timeout' : 'network' })
+      const error = isTimeout(err) ? 'timeout' : err instanceof TypeError ? 'network' : 'error'
+      logProviderFailure('ScamSniffer', { error })
     }
-    if (isTimeout(err)) throw new ProviderError(detail)
+    // The download's own timeout is remembered. Only the caller's deadline is not.
+    if (signal?.aborted) throw err instanceof ProviderError ? err : new ProviderError(detail)
     await cachePut(env.CACHE, SCAM_FAIL, detail, SCAM_FAIL_TTL)
     return detail
   }
@@ -259,10 +261,6 @@ function scamInvalid(): ProviderError {
 function scamFailDetail(stored: string): string {
   if (stored.startsWith('ScamSniffer ')) return stored.slice(0, 80)
   return 'ScamSniffer network error'
-}
-
-function isTimeout(err: unknown): boolean {
-  return err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
 }
 
 async function hitsFromShards(env: AppEnv, addresses: string[]): Promise<Set<string>> {
@@ -389,11 +387,6 @@ function cap(values: string[], limit = 5): string[] {
     if (unique.length === limit) break
   }
   return unique
-}
-
-function linked(parent: AbortSignal | undefined, ms: number): AbortSignal {
-  const timeout = AbortSignal.timeout(ms)
-  return parent ? AbortSignal.any([parent, timeout]) : timeout
 }
 
 interface HoneypotBody {
