@@ -1,4 +1,4 @@
-# custos-mcp
+# custosprotocol-mcp
 
 MCP server for the [Custos](https://custosprotocol.com) pre-sign check. It speaks stdio and calls the live API at `https://api.custosprotocol.com`.
 
@@ -19,7 +19,7 @@ A `provider_failed` reason means that provider did not answer. It does not mean 
 
 `CUSTOS_API_URL` overrides the API base. Leave it unset to use `https://api.custosprotocol.com`.
 
-This package is `custos-mcp`. It is not published from this repository snapshot. After publication, clients start it with `npx -y custos-mcp`. Until then, build it and point the client at `node`:
+This package is published on npm as `custosprotocol-mcp` (https://www.npmjs.com/package/custosprotocol-mcp). Clients start it with `npx -y custosprotocol-mcp`. To work from this repository instead:
 
 ```bash
 cd mcp
@@ -39,7 +39,7 @@ node dist/index.js
   "mcpServers": {
     "custos": {
       "command": "npx",
-      "args": ["-y", "custos-mcp"]
+      "args": ["-y", "custosprotocol-mcp"]
     }
   }
 }
@@ -54,7 +54,7 @@ node dist/index.js
   "mcpServers": {
     "custos": {
       "command": "npx",
-      "args": ["-y", "custos-mcp"]
+      "args": ["-y", "custosprotocol-mcp"]
     }
   }
 }
@@ -69,7 +69,7 @@ node dist/index.js
   "mcpServers": {
     "custos": {
       "command": "npx",
-      "args": ["-y", "custos-mcp"]
+      "args": ["-y", "custosprotocol-mcp"]
     }
   }
 }
@@ -77,14 +77,14 @@ node dist/index.js
 
 ## Any MCP client
 
-Launch the stdio server with `npx -y custos-mcp`. A local build uses `node` and the `dist/index.js` path instead of `npx`. Optional environment:
+Launch the stdio server with `npx -y custosprotocol-mcp`. A local build uses `node` and the `dist/index.js` path instead of `npx`. Optional environment:
 
 ```json
 {
   "mcpServers": {
     "custos": {
       "command": "npx",
-      "args": ["-y", "custos-mcp"],
+      "args": ["-y", "custosprotocol-mcp"],
       "env": {
         "CUSTOS_API_URL": "https://api.custosprotocol.com"
       }

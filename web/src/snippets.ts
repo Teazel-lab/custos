@@ -52,7 +52,7 @@ const MCP_SERVER = `{
   "mcpServers": {
     "custos": {
       "command": "npx",
-      "args": ["-y", "custos-mcp"]
+      "args": ["-y", "custosprotocol-mcp"]
     }
   }
 }`
@@ -65,7 +65,7 @@ export const MCP_GENERIC = `{
   "mcpServers": {
     "custos": {
       "command": "npx",
-      "args": ["-y", "custos-mcp"],
+      "args": ["-y", "custosprotocol-mcp"],
       "env": {
         "CUSTOS_API_URL": "${API_BASE}"
       }

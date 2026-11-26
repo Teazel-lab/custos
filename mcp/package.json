@@ -1,16 +1,29 @@
 {
-  "name": "custos-mcp",
+  "name": "custosprotocol-mcp",
   "version": "0.1.0",
   "description": "MCP server for the Custos pre-sign transaction check on BNB Chain and Base.",
   "license": "MIT",
+  "keywords": [
+    "custos",
+    "mcp",
+    "bnb-chain",
+    "base",
+    "ai-agent",
+    "security"
+  ],
+  "homepage": "https://custosprotocol.com",
   "type": "module",
   "bin": {
-    "custos-mcp": "./dist/index.js"
+    "custosprotocol-mcp": "./dist/index.js"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Teazel-lab/custos.git",

@@ -62,7 +62,7 @@ const READ_ONLY = {
 } as const;
 
 export function createServer(options: RequestOptions = {}): McpServer {
-  const server = new McpServer({ name: "custos-mcp", version: "0.1.0" });
+  const server = new McpServer({ name: "custosprotocol-mcp", version: "0.1.0" });
 
   server.registerTool(
     "custos_check",

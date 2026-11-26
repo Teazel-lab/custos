@@ -77,7 +77,7 @@ export async function checkTransaction(input: unknown, options: RequestOptions =
     headers: {
       "content-type": "application/json",
       accept: "application/json",
-      "user-agent": "custos-mcp/0.1.0",
+      "user-agent": "custosprotocol-mcp/0.1.0",
     },
     body: JSON.stringify(tx),
     signal: AbortSignal.timeout(20_000),
@@ -97,7 +97,7 @@ export async function lookupReport(
   const response = await (options.fetch ?? fetch)(`${base}/report/${target}?chainId=${chain}`, {
     headers: {
       accept: "application/json",
-      "user-agent": "custos-mcp/0.1.0",
+      "user-agent": "custosprotocol-mcp/0.1.0",
     },
     signal: AbortSignal.timeout(20_000),
   });

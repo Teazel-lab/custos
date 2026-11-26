@@ -131,7 +131,7 @@ describe('site copy and chain marks', () => {
     expect(CHECK_FETCH).toContain(`${API_BASE}/check`)
     expect(CHECK_CURL).toContain('"chainId":97')
     expect(MCP_CURSOR).toContain('npx')
-    expect(MCP_CURSOR).toContain('custos-mcp')
+    expect(MCP_CURSOR).toContain('["-y", "custosprotocol-mcp"]')
     expect(VERDICT_RULES.map((rule) => rule.id)).toEqual(['block', 'warn', 'allow'])
     expect(VERDICT_RULES[0].text).toContain('Danger blocks even when complete is false.')
     expect(pages).toContain('Danger blocks even when complete is false.')
