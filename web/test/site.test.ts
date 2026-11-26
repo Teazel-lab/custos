@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 import { applyAddressPaste, buildCheckRequest, EXAMPLE_SENDER, parseCheckResponse, parseReportResponse, reportUrl, severityClass } from '../src/api'
@@ -18,6 +21,12 @@ describe('addresses', () => {
     expect(CHAINS[97].registry).toBe(getAddress('0x14df99CEa96C8f0980cA0aF46CB5d30de782353A'))
     expect(CHAINS[97].agentIdHasHandle).toBe(false)
     expect(contractsReady(97)).toBe(true)
+
+    expect(CHAINS[8453].hub).toBeNull()
+    expect(CHAINS[8453].registry).toBeNull()
+    expect(CHAINS[8453].agentId).toBeNull()
+    expect(CHAINS[8453].native.symbol).toBe('ETH')
+    expect(contractsReady(8453)).toBe(false)
   })
 })
 
@@ -32,6 +41,7 @@ describe('check request', () => {
     })
     expect(Object.keys(body)).toEqual(['chainId', 'from', 'to', 'data', 'value'])
     expect(body.chainId).toBe(97)
+    expect(buildCheckRequest({ chainId: 8453, from: EXAMPLE_SENDER, to: EXAMPLE_SENDER, data: '0x', value: '0' }).chainId).toBe(8453)
   })
 
   it('fills a pasted token into to and shows the example sender', () => {
@@ -98,6 +108,38 @@ describe('response shape', () => {
   })
 })
 
+describe('site copy and chain marks', () => {
+  it('does not attribute the site to a hackathon', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const files = walk(join(root, 'src')).concat(join(root, 'index.html'))
+    const hits = files.flatMap((file) => {
+      const text = readFileSync(file, 'utf8')
+      return text.toLowerCase().includes('hackathon') ? [file] : []
+    })
+    expect(hits).toEqual([])
+  })
+
+  it('keeps the official BNB yellow and Base blue marks unchanged', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'assets')
+    const bnb = readFileSync(join(root, 'bnb-chain.svg'), 'utf8')
+    const base = readFileSync(join(root, 'base-square.svg'), 'utf8')
+    expect(bnb).toContain('fill="#F0B90B"')
+    expect(base).toContain('fill: blue')
+    expect(base).not.toContain('#ff4d5e')
+    expect(bnb).not.toContain('#ff4d5e')
+  })
+})
+
+function walk(dir: string): string[] {
+  const files: string[] = []
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name)
+    if (statSync(path).isDirectory()) files.push(...walk(path))
+    else if (/\.(ts|css|html|svg)$/.test(name)) files.push(path)
+  }
+  return files
+}
+
 describe('wallet guards', () => {
   it('rejects the zero address before a report is built', () => {
     expect(() => validateReportTarget('0x0000000000000000000000000000000000000000')).toThrow(/zero address/)
@@ -109,6 +151,7 @@ describe('wallet guards', () => {
     expect(call.chainId).toBe('0x61')
     expect(call.value).toBe('0x0')
     expect(transactionCall(getAddress(EXAMPLE_SENDER), getAddress(EXAMPLE_SENDER), '0x', 56).chainId).toBe('0x38')
+    expect(transactionCall(getAddress(EXAMPLE_SENDER), getAddress(EXAMPLE_SENDER), '0x', 8453).chainId).toBe('0x2105')
   })
 
   it('treats a nested 4902 as an unknown chain', () => {

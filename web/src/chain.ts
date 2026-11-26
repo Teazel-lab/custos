@@ -1,5 +1,5 @@
 import { createPublicClient, encodeFunctionData, getAddress, http, isAddress, type Address } from 'viem'
-import { bsc, bscTestnet } from 'viem/chains'
+import { base, bsc, bscTestnet } from 'viem/chains'
 import { agentIdAbi, hubAbi, registryAbi } from './abi'
 import { CHAINS, type ChainId, type ReportReason } from './config'
 import { sendTransaction, walletError, type Eip1193Provider } from './wallet'
@@ -13,13 +13,14 @@ export interface AgentRead {
 export function publicClient(chainId: ChainId) {
   const chain = CHAINS[chainId]
   return createPublicClient({
-    chain: chainId === 56 ? bsc : bscTestnet,
+    chain: chainId === 56 ? bsc : chainId === 8453 ? base : bscTestnet,
     transport: http(chain.rpc),
   })
 }
 
 export async function readAgent(chainId: ChainId, account: Address): Promise<AgentRead> {
   const chain = CHAINS[chainId]
+  if (!chain.agentId) return { balance: 0n, handle: null, holds: false }
   const client = publicClient(chainId)
   const balance = await client.readContract({
     address: chain.agentId,

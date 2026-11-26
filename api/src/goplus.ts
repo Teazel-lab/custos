@@ -545,7 +545,7 @@ async function readBody(response: Response): Promise<GoPlusBody | undefined> {
 }
 
 export function logProviderFailure(
-  provider: 'GoPlus' | 'ScamSniffer',
+  provider: 'GoPlus' | 'ScamSniffer' | 'Honeypot',
   fields: { op?: string; status?: number; code?: string; message?: string; error?: string },
 ): void {
   const entry: Record<string, string | number> = { provider }

@@ -1,11 +1,11 @@
 import { isAddress } from './abi'
 import { cacheGet, cachePut } from './cache'
+import { chainProfile, knownToken } from './chains'
 import { fetchGoPlus, isTimeout, linked, logProviderFailure, ProviderError, providerDetail, providerHeaders } from './goplus'
 import { providerReason } from './messages'
-import type { AppEnv, ChainId, Reason } from './types'
+import type { AppEnv, ChainId, ProviderState, Reason } from './types'
 
 const SCAM_URL = 'https://raw.githubusercontent.com/scamsniffer/scam-database/main/blacklist/address.json'
-const TOKEN_TTL = 3_600
 /** A GoPlus body with a real security answer. Flags change slowly. */
 export const GOPLUS_RECORD_TTL = 21_600
 /** Address flags that are all zero. Unknown addresses look like this. */
@@ -33,23 +33,44 @@ const ADDRESS_FLAGS = [
   'financial_crime',
 ] as const
 
+export interface TokenReputation {
+  reasons: Reason[]
+  /** Tokens with no usable record from GoPlus or Honeypot.is. */
+  uncovered: string[]
+  honeypot: ProviderState
+  goplus: ProviderState
+}
+
+export interface AddressReputation {
+  reasons: Reason[]
+  scamSniffer: ProviderState
+  goplus: ProviderState
+  /** Addresses whose GoPlus address_security call failed, including a 4029 cooldown. */
+  goplusFailed: string[]
+}
+
+const SKIPPED_TOKENS: TokenReputation = { reasons: [], uncovered: [], honeypot: 'skipped', goplus: 'skipped' }
+
 export async function checkTokens(
   env: AppEnv,
   chainId: ChainId,
   tokens: string[],
   signal?: AbortSignal,
   target?: string,
-): Promise<Reason[]> {
+): Promise<TokenReputation> {
   const unique = cap(tokens)
-  if (unique.length === 0) return []
-  if (chainId === 97) return []
+  if (unique.length === 0 || !chainProfile(chainId).tokenReputation) return SKIPPED_TOKENS
   const [honeypot, goplus] = await Promise.all([
-    honeypotReasons(env, chainId, unique, signal).catch(() => [providerReason('Honeypot')]),
-    goplusTokenReasons(env, chainId, unique, signal, target).catch((err) => [
-      providerReason('GoPlus', providerDetail(err, 'GoPlus')),
-    ]),
+    honeypotReasons(env, chainId, unique, signal),
+    goplusTokenReasons(env, chainId, unique, signal, target),
   ])
-  return [...honeypot, ...goplus]
+  const uncovered = unique.filter((token) => !honeypot.covered.has(token) && !goplus.covered.has(token))
+  return {
+    reasons: [...honeypot.reasons, ...goplus.reasons],
+    uncovered,
+    honeypot: honeypot.state,
+    goplus: goplus.state,
+  }
 }
 
 export async function checkAddresses(
@@ -57,49 +78,71 @@ export async function checkAddresses(
   chainId: ChainId,
   addresses: string[],
   signal?: AbortSignal,
-): Promise<Reason[]> {
+): Promise<AddressReputation> {
   const unique = cap(addresses, 8)
-  if (unique.length === 0) return []
+  if (unique.length === 0) return { reasons: [], scamSniffer: 'skipped', goplus: 'skipped', goplusFailed: [] }
   const scam = await scamReasons(env, unique, signal).catch((err) => [
     providerReason('ScamSniffer', providerDetail(err, 'ScamSniffer')),
   ])
-  if (chainId === 97) return scam
-  const goplus = await goplusAddressReasons(env, chainId, unique, signal).catch((err) => [
-    providerReason('GoPlus', providerDetail(err, 'GoPlus')),
-  ])
-  return [...goplus, ...scam]
+  const scamSniffer: ProviderState = scam.some((reason) => reason.code === 'provider_failed') ? 'failed' : 'answered'
+  if (!chainProfile(chainId).tokenReputation) {
+    return { reasons: scam, scamSniffer, goplus: 'skipped', goplusFailed: [] }
+  }
+  const goplus = await goplusAddressReasons(env, chainId, unique, signal).catch((err) => ({
+    reasons: [providerReason('GoPlus', providerDetail(err, 'GoPlus'))],
+    failed: unique,
+  }))
+  const goplusState: ProviderState = goplus.reasons.some((reason) => reason.code === 'provider_failed') ? 'failed' : 'answered'
+  return {
+    reasons: [...goplus.reasons, ...scam],
+    scamSniffer,
+    goplus: goplusState,
+    goplusFailed: goplus.failed,
+  }
 }
 
+interface HoneypotRead {
+  reasons: Reason[]
+  covered: Set<string>
+  state: ProviderState
+}
+
+/**
+ * Honeypot.is IsHoneypot. Docs (docs.honeypot.is) say X-API-KEY is optional and
+ * not required yet, so we do not send one. chainID is 56 or 8453. A non-OK
+ * response is not cached.
+ */
 async function honeypotReasons(
   env: AppEnv,
   chainId: ChainId,
   tokens: string[],
   signal?: AbortSignal,
-): Promise<Reason[]> {
+): Promise<HoneypotRead> {
   const reasons: Reason[] = []
+  const covered = new Set<string>()
   let failed = false
   await Promise.all(
     tokens.map(async (token) => {
       try {
-        const body = await cachedJson<HoneypotBody>(
-          env,
-          `honeypot:${chainId}:${token}`,
-          TOKEN_TTL,
-          async () => {
-            const response = await fetch(
-              `https://api.honeypot.is/v2/IsHoneypot?address=${token}&chainID=${chainId}`,
-              { headers: providerHeaders(), signal: linked(signal, 4_000) },
-            )
-            if (!response.ok) throw new Error('honeypot http')
-            return (await response.json()) as HoneypotBody
-          },
-        )
+        const body = await readHoneypot(env, chainId, token, signal)
+        if (!body) {
+          failed = true
+          return
+        }
+        if (honeypotCovers(body)) covered.add(token)
         const flag = body.honeypotResult?.isHoneypot
         if (flag === true || flag === 'true') {
           reasons.push({
             code: 'honeypot',
             severity: 'danger',
             message: `Token ${token} looks like a honeypot.`,
+          })
+        }
+        if (cannotSell(body)) {
+          reasons.push({
+            code: 'cannot_sell',
+            severity: 'danger',
+            message: `Token ${token} may not be fully sellable.`,
           })
         }
         const tax = Number(body.simulationResult?.sellTax)
@@ -116,7 +159,74 @@ async function honeypotReasons(
     }),
   )
   if (failed) reasons.push(providerReason('Honeypot'))
-  return reasons
+  return { reasons, covered, state: failed ? 'failed' : 'answered' }
+}
+
+async function readHoneypot(
+  env: AppEnv,
+  chainId: ChainId,
+  token: string,
+  signal?: AbortSignal,
+): Promise<HoneypotBody | null> {
+  const key = `honeypot:${chainId}:${token}`
+  const hit = await cacheGet(env.CACHE, key)
+  if (hit !== null) return JSON.parse(hit) as HoneypotBody
+  const response = await fetch(
+    `https://api.honeypot.is/v2/IsHoneypot?address=${token}&chainID=${chainId}`,
+    { headers: providerHeaders(), signal: linked(signal, 4_000) },
+  )
+  if (!response.ok) {
+    logProviderFailure('Honeypot', { status: response.status })
+    throw new Error('honeypot http')
+  }
+  const body = (await response.json()) as HoneypotBody
+  const ttl = honeypotTtl(body)
+  if (ttl === null) return null
+  await cachePut(env.CACHE, key, JSON.stringify(body), ttl)
+  return body
+}
+
+/**
+ * A usable simulation is cached like a GoPlus record: flagged for 6 hours, clean for 30 minutes.
+ * A known honeypot flag with a failed or incomplete simulation is cached for 90 seconds and does not count as coverage.
+ */
+export function honeypotTtl(body: HoneypotBody): number | null {
+  if (!honeypotKnown(body.honeypotResult?.isHoneypot)) return null
+  if (!honeypotCovers(body)) return GOPLUS_EMPTY_TTL
+  const tax = finiteTax(body.simulationResult?.sellTax) ?? 0
+  if (body.honeypotResult?.isHoneypot === true || body.honeypotResult?.isHoneypot === 'true' || tax > 20 || cannotSell(body)) {
+    return GOPLUS_RECORD_TTL
+  }
+  return GOPLUS_ADDRESS_CLEAN_TTL
+}
+
+/** Coverage needs a simulation that ran and finite taxes. `null` is not zero. Flags can still be raised without it. */
+function honeypotCovers(body: HoneypotBody): boolean {
+  if (!honeypotKnown(body.honeypotResult?.isHoneypot)) return false
+  if (body.simulationSuccess === false) return false
+  if (finiteTax(body.simulationResult?.sellTax) === null) return false
+  const buy = body.simulationResult?.buyTax
+  if (buy !== undefined && finiteTax(buy) === null) return false
+  return true
+}
+
+/** A JSON number, or a non-empty numeric string. `null` and `""` are not taxes. */
+function finiteTax(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value !== 'string' || value.trim() === '') return null
+  const tax = Number(value)
+  return Number.isFinite(tax) ? tax : null
+}
+
+function honeypotKnown(flag: boolean | string | undefined): boolean {
+  return flag === true || flag === false || flag === 'true' || flag === 'false'
+}
+
+function cannotSell(body: HoneypotBody): boolean {
+  const max = body.simulationResult?.maxSell
+  if (!max) return false
+  if (max.token === 0) return true
+  return max.tokenWei === '0'
 }
 
 async function goplusTokenReasons(
@@ -125,32 +235,42 @@ async function goplusTokenReasons(
   tokens: string[],
   signal: AbortSignal | undefined,
   target: string | undefined,
-): Promise<Reason[]> {
-  const loaded = await loadGoPlusTokenRecords(env, chainId, tokens, signal)
-  const reasons: Reason[] = []
-  for (const token of tokens) {
-    const record = loaded.records.get(token)
-    if (!record) continue
-    if (record.is_honeypot === '1') {
-      reasons.push({ code: 'honeypot', severity: 'danger', message: `Token ${token} looks like a honeypot.` })
+): Promise<{ reasons: Reason[]; covered: Set<string>; state: ProviderState }> {
+  try {
+    const loaded = await loadGoPlusTokenRecords(env, chainId, tokens, signal)
+    const reasons: Reason[] = []
+    const covered = new Set<string>()
+    for (const token of tokens) {
+      const record = loaded.records.get(token)
+      if (!record) continue
+      if (record.is_honeypot === '1') {
+        reasons.push({ code: 'honeypot', severity: 'danger', message: `Token ${token} looks like a honeypot.` })
+      }
+      if (record.cannot_sell_all === '1') {
+        reasons.push({
+          code: 'cannot_sell',
+          severity: 'danger',
+          message: `Token ${token} may not be fully sellable.`,
+        })
+      }
+      if (tokenComplete(record)) covered.add(token)
     }
-    if (record.cannot_sell_all === '1') {
+    const wanted = target?.toLowerCase()
+    if (wanted && loaded.absent.has(wanted) && !knownToken(chainId, wanted)) {
       reasons.push({
-        code: 'cannot_sell',
-        severity: 'danger',
-        message: `Token ${token} may not be fully sellable.`,
+        code: 'unknown_token',
+        severity: 'warn',
+        message: `Token ${wanted} has no GoPlus record.`,
       })
     }
+    return { reasons, covered, state: 'answered' }
+  } catch (err) {
+    return {
+      reasons: [providerReason('GoPlus', providerDetail(err, 'GoPlus'))],
+      covered: new Set(),
+      state: 'failed',
+    }
   }
-  const wanted = target?.toLowerCase()
-  if (wanted && loaded.absent.has(wanted)) {
-    reasons.push({
-      code: 'unknown_token',
-      severity: 'warn',
-      message: `Token ${wanted} has no GoPlus record.`,
-    })
-  }
-  return reasons
 }
 
 /**
@@ -162,15 +282,18 @@ async function goplusAddressReasons(
   chainId: ChainId,
   addresses: string[],
   signal?: AbortSignal,
-): Promise<Reason[]> {
+): Promise<{ reasons: Reason[]; failed: string[] }> {
   const reasons: Reason[] = []
-  let failed = false
+  const failed: string[] = []
   let detail: string | undefined
   await Promise.all(
     addresses.map(async (address) => {
       try {
         const record = await goplusAddress(env, chainId, address, signal)
-        if (ADDRESS_FLAGS.some((flag) => record[flag] === '1')) {
+        if (!addressRecordAnswered(record)) {
+          failed.push(address)
+          detail ??= 'empty result'
+        } else if (ADDRESS_FLAGS.some((flag) => record[flag] === '1')) {
           reasons.push({
             code: 'address_malicious',
             severity: 'danger',
@@ -178,13 +301,13 @@ async function goplusAddressReasons(
           })
         }
       } catch (err) {
-        failed = true
+        failed.push(address)
         detail ??= providerDetail(err, 'GoPlus')
       }
     }),
   )
-  if (failed) reasons.push(providerReason('GoPlus', detail))
-  return reasons
+  if (failed.length > 0) reasons.push(providerReason('GoPlus', detail))
+  return { reasons, failed }
 }
 
 async function scamReasons(env: AppEnv, addresses: string[], signal?: AbortSignal): Promise<Reason[]> {
@@ -361,6 +484,11 @@ function recordObject(value: unknown): Record<string, string> {
   return value as Record<string, string>
 }
 
+/** A code-1 body with none of the address flags is not a clean answer. */
+function addressRecordAnswered(record: Record<string, string>): boolean {
+  return ADDRESS_FLAGS.some((flag) => Object.prototype.hasOwnProperty.call(record, flag))
+}
+
 function goplusAddressTtl(record: Record<string, string>): number {
   if (ADDRESS_FLAGS.some((flag) => record[flag] === '1')) return GOPLUS_RECORD_TTL
   if (Object.keys(record).length === 0) return GOPLUS_EMPTY_TTL
@@ -383,15 +511,6 @@ function lookup(result: Record<string, Record<string, string>>, address: string)
   return null
 }
 
-/** Caches a successful load only. A thrown load, including a timeout, is not stored. */
-async function cachedJson<T>(env: AppEnv, key: string, ttl: number, load: () => Promise<T>): Promise<T> {
-  const hit = await cacheGet(env.CACHE, key)
-  if (hit !== null) return JSON.parse(hit) as T
-  const value = await load()
-  await cachePut(env.CACHE, key, JSON.stringify(value), ttl)
-  return value
-}
-
 function cap(values: string[], limit = 5): string[] {
   const unique: string[] = []
   for (const value of values) {
@@ -405,5 +524,10 @@ function cap(values: string[], limit = 5): string[] {
 
 interface HoneypotBody {
   honeypotResult?: { isHoneypot?: boolean | string }
-  simulationResult?: { sellTax?: number | string }
+  simulationSuccess?: boolean
+  simulationResult?: {
+    sellTax?: number | string | null
+    buyTax?: number | string | null
+    maxSell?: { token?: number; tokenWei?: string }
+  }
 }

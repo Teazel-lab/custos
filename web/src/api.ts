@@ -21,8 +21,14 @@ export interface Reason {
 export interface CheckResponse {
   verdict: 'safe' | 'warn' | 'danger' | string
   score: number
-  /** Present on the updated API. False means GoPlus or ScamSniffer did not answer. */
+  /** False when token coverage, ScamSniffer, or a required GoPlus address check missed. */
   complete?: boolean
+  providers?: {
+    goplus: string
+    honeypot: string
+    scamSniffer: string
+    registry: string
+  }
   reasons: Reason[]
   simulation: {
     mode: string
@@ -73,7 +79,9 @@ export function applyAddressPaste(fields: ScannerFields, pasted: string): Scanne
 }
 
 export function buildCheckRequest(input: ScannerFields): CheckRequest {
-  if (input.chainId !== 56 && input.chainId !== 97) throw new Error('Chain must be BSC or BSC testnet.')
+  if (input.chainId !== 56 && input.chainId !== 97 && input.chainId !== 8453) {
+    throw new Error('Chain must be BNB Chain, BSC testnet, or Base.')
+  }
   const from = addressField(input.from, 'From')
   const to = addressField(input.to, 'To')
   const data = (input.data.trim() || '0x').toLowerCase()
@@ -131,6 +139,7 @@ export function parseCheckResponse(value: unknown): CheckResponse {
     verdict: body.verdict,
     score: body.score,
     ...(typeof body.complete === 'boolean' ? { complete: body.complete } : {}),
+    ...(body.providers && typeof body.providers === 'object' ? { providers: body.providers } : {}),
     reasons,
     simulation: {
       mode: simulation.mode,
@@ -147,7 +156,7 @@ export function parseCheckResponse(value: unknown): CheckResponse {
 export function parseReportResponse(value: unknown): ReportResponse {
   if (!value || typeof value !== 'object') throw new Error('The registry response was not in the expected shape.')
   const body = value as Partial<ReportResponse>
-  if (typeof body.address !== 'string' || (body.chainId !== 56 && body.chainId !== 97)) {
+  if (typeof body.address !== 'string' || (body.chainId !== 56 && body.chainId !== 97 && body.chainId !== 8453)) {
     throw new Error('The registry response was not in the expected shape.')
   }
   if (typeof body.configured !== 'boolean' || typeof body.reportCount !== 'string' || !body.reasons) {

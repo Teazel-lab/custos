@@ -1,4 +1,5 @@
 import { dataWord, decodeRevertData, isAddress, topicAddress } from './abi'
+import { nativeSymbol } from './chains'
 import { isKnownCalldata, type DecodedCall } from './calldata'
 import {
   APPROVAL,
@@ -174,7 +175,7 @@ async function traceSimulation(
     signal,
   )
   if (!result || typeof result !== 'object') throw new Error('empty trace')
-  return resultFromAcc(env, tx, walk(result as TraceFrame, tx.from.toLowerCase()), 'trace', signal)
+  return resultFromAcc(env, tx, walk(result as TraceFrame, tx.from.toLowerCase(), nativeSymbol(tx.chainId)), 'trace', signal)
 }
 
 interface SimCall {
@@ -212,7 +213,7 @@ async function ethSimulate(env: AppEnv, tx: Tx, signal: AbortSignal): Promise<Si
       acc.reverted = true
       if (!acc.revertReason) acc.revertReason = reasonFromSimCall(call)
     }
-    for (const log of call.logs ?? []) decodeLog(log, acc, user)
+    for (const log of call.logs ?? []) decodeLog(log, acc, user, nativeSymbol(tx.chainId))
   }
   return resultFromAcc(env, tx, acc, 'simulate', signal)
 }
@@ -285,13 +286,13 @@ function emptyAcc(): Acc {
   }
 }
 
-function walk(frame: TraceFrame, user: string): Acc {
+function walk(frame: TraceFrame, user: string, native: string): Acc {
   const acc = emptyAcc()
-  visit(frame, acc, true, user)
+  visit(frame, acc, true, user, native)
   return acc
 }
 
-function visit(frame: TraceFrame, acc: Acc, top: boolean, user: string): void {
+function visit(frame: TraceFrame, acc: Acc, top: boolean, user: string, native: string): void {
   if (frame.error || frame.revertReason) {
     if (top) {
       acc.reverted = true
@@ -305,7 +306,7 @@ function visit(frame: TraceFrame, acc: Acc, top: boolean, user: string): void {
       const amount = BigInt(frame.value)
       if (amount > 0n) {
         acc.assets.push({
-          asset: 'native',
+          asset: native,
           from: frame.from.toLowerCase(),
           to: frame.to.toLowerCase(),
           amount: amount.toString(),
@@ -315,11 +316,11 @@ function visit(frame: TraceFrame, acc: Acc, top: boolean, user: string): void {
       // Ignore a trace value that is not a hex quantity.
     }
   }
-  for (const log of frame.logs ?? []) decodeLog(log, acc, user)
-  for (const call of frame.calls ?? []) visit(call, acc, false, user)
+  for (const log of frame.logs ?? []) decodeLog(log, acc, user, native)
+  for (const call of frame.calls ?? []) visit(call, acc, false, user, native)
 }
 
-function decodeLog(log: TraceLog, acc: Acc, user: string): void {
+function decodeLog(log: TraceLog, acc: Acc, user: string, nativeName: string): void {
   const topics = (log.topics ?? []).map((topic) => topic.toLowerCase())
   const token = log.address?.toLowerCase() ?? ''
   if (!isAddress(token) || topics.length < 3) return
@@ -330,7 +331,7 @@ function decodeLog(log: TraceLog, acc: Acc, user: string): void {
     const to = topicAddress(topics[2] ?? '0x0')
     const native = token === NATIVE_LOG
     acc.assets.push({
-      asset: native ? 'native' : token,
+      asset: native ? nativeName : token,
       from,
       to,
       amount: amount.toString(),

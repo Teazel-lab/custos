@@ -23,6 +23,10 @@ export interface AppEnv {
   TRACE_RPC_URL_56?: string
   /** debug_traceCall for chain 97. Empty skips the trace tier on testnet. */
   TRACE_RPC_URL_97?: string
+  /** Plain JSON-RPC for Base (chain 8453). Empty falls back to the public Base endpoint. */
+  RPC_URL_8453?: string
+  /** debug_traceCall for Base. Empty skips the trace tier and uses simulate, then call. */
+  TRACE_RPC_URL_8453?: string
   LLM_API_KEY?: string
   /** Set to `1` in local dev so the API allows localhost origins. Unset in production. */
   ALLOW_DEV_ORIGINS?: string
@@ -32,7 +36,18 @@ export interface AppEnv {
   GOPLUS_APP_SECRET?: string
 }
 
-export type ChainId = 56 | 97
+export type ChainId = 56 | 97 | 8453
+
+/** Whether a reputation source returned a body we could use. */
+export type ProviderState = 'answered' | 'failed' | 'skipped'
+
+export interface Providers {
+  goplus: ProviderState
+  honeypot: ProviderState
+  scamSniffer: ProviderState
+  /** `unconfigured` is chain 56 until the mainnet registry is set. Base is `skipped`. */
+  registry: ProviderState | 'unconfigured'
+}
 export type Verdict = 'safe' | 'warn' | 'danger'
 export type Severity = 'info' | 'warn' | 'danger'
 export type SimulationMode = 'trace' | 'simulate' | 'call'
@@ -70,8 +85,14 @@ export interface Simulation {
 export interface CheckResponse {
   verdict: Verdict
   score: number
-  /** False when GoPlus or ScamSniffer did not answer. The verdict is then no better than warn. */
+  /**
+   * False when ScamSniffer failed, or no token-reputation provider returned a
+   * usable record for a token in the transaction. A GoPlus miss alone does not
+   * do this when Honeypot.is answered. The verdict is then no better than warn.
+   */
   complete: boolean
+  /** Which reputation sources answered this check. */
+  providers: Providers
   reasons: Reason[]
   simulation: Simulation
   explanation: string
