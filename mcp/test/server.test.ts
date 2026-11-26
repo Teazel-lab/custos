@@ -37,6 +37,8 @@ describe("stdio tools", () => {
     try {
       const listed = await session.client.listTools();
       expect(listed.tools.map((tool) => tool.name).sort()).toEqual(["custos_check", "custos_report"]);
+      const check = listed.tools.find((tool) => tool.name === "custos_check");
+      expect(check?.description).toContain("Danger blocks even when complete is false");
     } finally {
       await session.close();
     }

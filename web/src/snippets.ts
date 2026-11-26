@@ -22,11 +22,11 @@ const result = await response.json();
 if (!response.ok || typeof result.verdict !== "string" || typeof result.complete !== "boolean") {
   throw new Error("Custos check did not finish.");
 }
-const action = result.complete === false || result.verdict === "warn"
-  ? "warn"
-  : result.verdict === "danger"
-    ? "block"
-    : result.verdict === "safe"
+const action = result.verdict === "danger"
+  ? "block"
+  : result.verdict === "warn" || result.complete === false
+    ? "warn"
+    : result.verdict === "safe" && result.complete === true
       ? "allow"
       : "warn";`
 
@@ -77,12 +77,12 @@ export const VERDICT_RULES = [
   {
     id: 'block',
     title: 'Block',
-    text: 'verdict danger. Do not sign. Tell the owner the reasons. Do not ask them to sign it anyway.',
+    text: 'verdict danger. Danger blocks even when complete is false. Do not sign. Tell the owner the reasons. Do not ask them to sign it anyway.',
   },
   {
     id: 'warn',
     title: 'Warn',
-    text: 'verdict warn, or complete false. Stop and ask the owner to confirm before anything is signed.',
+    text: 'verdict warn, or complete false, unless the verdict is danger. Stop and ask the owner to confirm before anything is signed.',
   },
   {
     id: 'allow',

@@ -72,7 +72,8 @@ export function createServer(options: RequestOptions = {}): McpServer {
         "Check a transaction before it is signed on BNB Smart Chain (56), BSC testnet (97), or Base (8453). " +
         "Send only chainId, from, to, data, and value. Do not send a private key, seed phrase, or keystore. " +
         "Custos does not sign or broadcast. Returns verdict, complete, reasons, providers, and explanation. " +
-        "danger: do not sign, and tell the owner. warn, or complete false: stop and ask the owner to confirm. " +
+        "Danger blocks even when complete is false: do not sign, and tell the owner. " +
+        "warn, or complete false when the verdict is not danger: stop and ask the owner to confirm. " +
         "safe with complete true: the owner may confirm it in their own wallet. Do not skip that confirmation. " +
         "A provider_failed reason does not by itself mean the check is incomplete. " +
         "If this tool errors, do not sign.",

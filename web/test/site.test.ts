@@ -133,7 +133,20 @@ describe('site copy and chain marks', () => {
     expect(MCP_CURSOR).toContain('npx')
     expect(MCP_CURSOR).toContain('custos-mcp')
     expect(VERDICT_RULES.map((rule) => rule.id)).toEqual(['block', 'warn', 'allow'])
+    expect(VERDICT_RULES[0].text).toContain('Danger blocks even when complete is false.')
+    expect(pages).toContain('Danger blocks even when complete is false.')
     expect(pages).not.toContain('hackathon')
+  })
+
+  it('blocks danger before an incomplete check is treated as warn', () => {
+    const skill = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'skill', 'custos', 'SKILL.md'), 'utf8')
+    for (const source of [CHECK_FETCH, skill]) {
+      expect(decide(source, { verdict: 'danger', complete: false })).toBe('block')
+      expect(decide(source, { verdict: 'danger', complete: true })).toBe('block')
+      expect(decide(source, { verdict: 'safe', complete: false })).toBe('warn')
+      expect(decide(source, { verdict: 'warn', complete: true })).toBe('warn')
+      expect(decide(source, { verdict: 'safe', complete: true })).toBe('allow')
+    }
   })
 
   it('keeps the official BNB yellow and Base blue marks unchanged', () => {
@@ -146,6 +159,12 @@ describe('site copy and chain marks', () => {
     expect(bnb).not.toContain('#ff4d5e')
   })
 })
+
+function decide(source: string, result: { verdict: string; complete: boolean }): string {
+  const match = /const action = ([\s\S]*?);/.exec(source)
+  if (!match?.[1]) throw new Error('snippet has no action')
+  return new Function('result', `return (${match[1]});`)(result) as string
+}
 
 function walk(dir: string): string[] {
   const files: string[] = []

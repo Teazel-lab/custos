@@ -230,7 +230,7 @@ Set `RPC_URL_56` and `RPC_URL_97` separately. A mainnet Alchemy URL will not ans
 
 ## Skill
 
-`skill/custos/SKILL.md` is an Agent Skill. An agent that loads it POSTs to `https://api.custosprotocol.com/check` before signing on chain 56, 97, or 8453. `danger` is block: do not sign, and tell the owner. `warn`, or `complete: false`, stops and asks the owner to confirm. `safe` with `complete: true` may go to the owner's wallet, which still confirms it. `skill/custos/scripts/check.mjs` prints that action. It does not take a key.
+`skill/custos/SKILL.md` is an Agent Skill. An agent that loads it POSTs to `https://api.custosprotocol.com/check` before signing on chain 56, 97, or 8453. `danger` is block even when `complete` is false: do not sign, and tell the owner. `warn`, or `complete: false` on any other verdict, stops and asks the owner to confirm. `safe` with `complete: true` may go to the owner's wallet, which still confirms it. `skill/custos/scripts/check.mjs` prints that action. It does not take a key.
 
 ## MCP
 

@@ -11,6 +11,8 @@ description: >-
 
 Custos reviews a transaction before anyone signs it. It never signs, never broadcasts, and never asks for a private key, seed phrase, or keystore. Do not ask the owner for those, and do not put them in the request. An `allow` result only means you may hand the transaction to the owner's wallet. The wallet still has to confirm it.
 
+Never use QR login or WalletConnect. Never transfer funds on your own initiative.
+
 ## When to check
 
 Check before you sign or send any transaction on:
@@ -53,14 +55,13 @@ Map the response to one action. Do this after every check, including a retry.
 
 | Result | Action |
 | --- | --- |
-| The request fails, or the body has no `verdict` | Do not sign. Tell the owner the check did not finish. |
-| `complete` is `false` | **Warn.** Stop and ask the owner to confirm. Do not sign yet. |
-| `verdict` is `danger` | **Block.** Do not sign. Tell the owner the reasons. |
-| `verdict` is `warn` | **Warn.** Stop and ask the owner to confirm. Do not sign yet. |
+| `verdict` is `danger` | **Block.** Do not sign. Tell the owner the reasons. Danger blocks even when complete is false. |
+| `verdict` is `warn`, or `complete` is `false` | **Warn.** Stop and ask the owner to confirm. Do not sign yet. This row does not apply when `verdict` is `danger`. |
 | `verdict` is `safe` and `complete` is `true` | **Allow.** You may hand the transaction to the owner's wallet. The wallet still confirms it. |
+| The request fails, times out, or the body has no `verdict` | Do not sign. Tell the owner the check did not finish. |
 | Any other `verdict` | **Warn.** Stop and ask the owner to confirm. |
 
-`complete: false` is warn even when `verdict` is `safe`. The API already keeps an incomplete check off `safe`, but still treat `complete: false` as warn if you see it.
+Danger blocks even when complete is false. `complete: false` is warn when `verdict` is `safe` or anything other than `danger`. The API can return `{ verdict: "danger", complete: false }`. Do not downgrade that to warn.
 
 A `provider_failed` reason only means that provider did not answer. It does not mean the check is incomplete. Honeypot.is can cover a token when GoPlus is rate limited, and the response can be `complete: true`. Obey `complete` and `verdict`, not the wording of a single provider miss. The explanation says `This check is incomplete.` only when `complete` is false.
 
@@ -92,11 +93,11 @@ const result = await response.json();
 if (!response.ok || typeof result.verdict !== "string" || typeof result.complete !== "boolean") {
   throw new Error("Custos check did not finish.");
 }
-const action = result.complete === false || result.verdict === "warn"
-  ? "warn"
-  : result.verdict === "danger"
-    ? "block"
-    : result.verdict === "safe"
+const action = result.verdict === "danger"
+  ? "block"
+  : result.verdict === "warn" || result.complete === false
+    ? "warn"
+    : result.verdict === "safe" && result.complete === true
       ? "allow"
       : "warn";
 ```

@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && node --test ../skill/custos/scripts/check.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

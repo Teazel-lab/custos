@@ -174,7 +174,7 @@ export function renderDocs(root: HTMLElement): () => void {
       attrs: { id: 'verdicts' },
       children: [
         el('h2', { text: 'Verdicts' }),
-        el('p', { text: 'The API returns verdict safe, warn, or danger, plus complete, reasons, and providers. Map that onto one action. complete false is warn even if verdict says safe. A provider_failed reason only means that provider did not answer. The explanation says the check is incomplete only when complete is false.' }),
+        el('p', { text: 'The API returns verdict safe, warn, or danger, plus complete, reasons, and providers. Map that onto one action. Danger blocks even when complete is false. complete false is warn when the verdict is not danger. A provider_failed reason only means that provider did not answer. The explanation says the check is incomplete only when complete is false.' }),
         el('div', {
           class: 'grid-3',
           children: VERDICT_RULES.map((rule) => el('article', {
@@ -899,7 +899,7 @@ function useCases(): HTMLElement {
     },
     {
       title: 'Stop a bad swap',
-      body: 'Trading and DeFi bots refuse honeypots and malicious approvals: block on danger, and stop on warn or an incomplete check.',
+      body: 'Trading and DeFi bots refuse honeypots and malicious approvals. Danger blocks even when the check is incomplete. Warn, or an incomplete check that is not danger, stops for the owner.',
       href: '/docs#verdicts',
       link: 'Verdict rules',
     },

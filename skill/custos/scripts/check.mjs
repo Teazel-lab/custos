@@ -42,9 +42,9 @@ function parseArgs(argv) {
 
 export function actionFor(body) {
   if (!body || typeof body.verdict !== "string" || typeof body.complete !== "boolean") return "error";
-  if (body.complete === false || body.verdict === "warn") return "warn";
   if (body.verdict === "danger") return "block";
-  if (body.verdict === "safe") return "allow";
+  if (body.verdict === "warn" || body.complete === false) return "warn";
+  if (body.verdict === "safe" && body.complete === true) return "allow";
   return "warn";
 }
 
@@ -89,6 +89,7 @@ async function main() {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(20_000),
   });
   let body;
   try {
@@ -122,5 +123,9 @@ function isDirectRun() {
 }
 
 if (isDirectRun()) {
-  main().catch((err) => fail(err instanceof Error ? err.message : "Check failed."));
+  main().catch((err) => {
+    const name = err instanceof Error ? err.name : "";
+    if (name === "TimeoutError" || name === "AbortError") fail("Check timed out. Do not sign.");
+    fail(err instanceof Error ? err.message : "Check failed.");
+  });
 }
