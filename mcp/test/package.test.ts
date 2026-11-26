@@ -14,11 +14,11 @@ describe("package metadata", () => {
 
   it("publishes as custosprotocol-mcp", () => {
     expect(pkg.name).toBe("custosprotocol-mcp");
-    expect(pkg.version).toBe("0.1.0");
+    expect(pkg.version).toBe("0.1.1");
     expect(pkg.license).toBe("MIT");
     expect(pkg.homepage).toBe("https://custosprotocol.com");
     expect(pkg.repository.url).toBe("git+https://github.com/Teazel-lab/custos.git");
-    expect(pkg.bin["custosprotocol-mcp"]).toBe("./dist/index.js");
+    expect(pkg.bin["custosprotocol-mcp"]).toBe("dist/index.js");
     expect(pkg.publishConfig.access).toBe("public");
     expect(pkg.bin["custos-mcp"]).toBeUndefined();
   });
