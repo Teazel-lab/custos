@@ -114,6 +114,10 @@ node scripts/check.mjs --chain 56 --from 0x0000000000000000000000000000000000000
 
 The script prints `{ action, verdict, complete, reasons, providers }`. Exit `0` is allow, `2` is warn, `3` is block, and `1` is a failed check. A failed check means do not sign. `CUSTOS_API_URL` overrides the API base. The default is `https://api.custosprotocol.com`.
 
+## MCP
+
+The same check is published as the npm package `custosprotocol-mcp`. Start it with `npx -y custosprotocol-mcp`. The tools are `custos_check` and `custos_report`.
+
 ## Registry lookup
 
 `GET https://api.custosprotocol.com/report/<address>?chainId=56` returns community report counts. `chainId` may be `56`, `97`, or `8453` and defaults to `97`. Base has no Custos registry. A report is a statement by an Agent ID holder. It is not proof that an address is safe or unsafe. This lookup is not a substitute for `/check`.

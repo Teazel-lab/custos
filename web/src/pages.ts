@@ -199,7 +199,7 @@ export function renderDocs(root: HTMLElement): () => void {
       attrs: { id: 'mcp' },
       children: [
         el('h2', { text: 'MCP server' }),
-        el('p', { text: 'custos-mcp is a stdio server. Tools are custos_check and custos_report. The default API is the production check endpoint. Set CUSTOS_API_URL only when you want a different base. npx custos-mcp starts it. Do not send a key or a seed.' }),
+        el('p', { text: 'custosprotocol-mcp is a stdio server. Tools are custos_check and custos_report. The default API is the production check endpoint. Set CUSTOS_API_URL only when you want a different base. npx custosprotocol-mcp starts it. Do not send a key or a seed.' }),
         el('h3', { text: 'Claude Desktop' }),
         el('p', { class: 'muted', text: 'claude_desktop_config.json. macOS: ~/Library/Application Support/Claude/. Linux: ~/.config/Claude/.' }),
         el('pre', { text: MCP_CLAUDE_DESKTOP }),
@@ -210,7 +210,7 @@ export function renderDocs(root: HTMLElement): () => void {
         el('p', { class: 'muted', text: '.cursor/mcp.json, or Cursor Settings, MCP.' }),
         el('pre', { text: MCP_CURSOR }),
         el('h3', { text: 'Any MCP client' }),
-        el('p', { class: 'muted', text: 'Launch the stdio command npx -y custos-mcp. The env block is optional.' }),
+        el('p', { class: 'muted', text: 'Launch the stdio command npx -y custosprotocol-mcp. The env block is optional.' }),
         el('pre', { text: MCP_GENERIC }),
       ],
     }),
@@ -874,7 +874,7 @@ function useCases(): HTMLElement {
     },
     {
       title: 'Plug in the MCP server',
-      body: 'Connect custos-mcp from Claude, Cursor, or any MCP client. The agent calls custos_check instead of signing blind.',
+      body: 'Connect custosprotocol-mcp from Claude, Cursor, or any MCP client. The agent calls custos_check instead of signing blind.',
       href: '/docs#mcp',
       link: 'MCP config',
     },
