@@ -45,7 +45,7 @@ export interface Providers {
   goplus: ProviderState
   honeypot: ProviderState
   scamSniffer: ProviderState
-  /** `unconfigured` is chain 56 until the mainnet registry is set. Base is `skipped`. */
+  /** Base is `skipped`. `unconfigured` is reserved for a chain whose address is empty. */
   registry: ProviderState | 'unconfigured'
 }
 export type Verdict = 'safe' | 'warn' | 'danger'

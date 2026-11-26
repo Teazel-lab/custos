@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { checkTransaction, lookupReport, type RequestOptions } from "./api.js";
+import { PACKAGE_VERSION } from "./version.js";
 
 const chainId = z.union([z.literal(56), z.literal(97), z.literal(8453)]);
 const address = z.string().regex(/^0x[0-9a-fA-F]{40}$/, "must be a 20-byte hex address");
@@ -62,7 +63,7 @@ const READ_ONLY = {
 } as const;
 
 export function createServer(options: RequestOptions = {}): McpServer {
-  const server = new McpServer({ name: "custosprotocol-mcp", version: "0.1.0" });
+  const server = new McpServer({ name: "custosprotocol-mcp", version: PACKAGE_VERSION });
 
   server.registerTool(
     "custos_check",

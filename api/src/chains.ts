@@ -20,7 +20,7 @@ export interface ChainProfile {
   publicRpc: string
   /** GoPlus and Honeypot.is both cover this chain. Chain 97 does not. */
   tokenReputation: boolean
-  /** Base has no Custos registry. Chain 56 is unconfigured. Chain 97 is live. */
+  /** Base has no Custos registry. Chain 56 and chain 97 are live. */
   registry: 'live' | 'unconfigured' | 'unsupported'
   knownTokens: KnownToken[]
 }
@@ -36,7 +36,7 @@ export const CHAINS: Record<ChainId, ChainProfile> = {
     native: { name: 'BNB', symbol: 'BNB' },
     publicRpc: 'https://bsc.publicnode.com',
     tokenReputation: true,
-    registry: 'unconfigured',
+    registry: 'live',
     knownTokens: [
       { symbol: 'USDT', address: BSC_USDT },
       { symbol: 'USDC', address: BSC_USDC },

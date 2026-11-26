@@ -59,7 +59,7 @@ export async function readProtected(chainId: ChainId, account: Address): Promise
 
 export async function activateWallet(provider: Eip1193Provider, account: Address, chainId: ChainId): Promise<string> {
   const hub = CHAINS[chainId].hub
-  if (!hub) throw new Error('Mainnet activation is coming soon. The hub is not deployed yet.')
+  if (!hub) throw new Error('This chain has no Custos hub.')
   const data = encodeFunctionData({ abi: hubAbi, functionName: 'activate' })
   return sendTransaction(provider, account, hub, data, chainId)
 }
@@ -72,7 +72,7 @@ export async function reportTarget(
   reason: ReportReason,
 ): Promise<string> {
   const registry = CHAINS[chainId].registry
-  if (!registry) throw new Error('Mainnet reports are coming soon. The registry is not deployed yet.')
+  if (!registry) throw new Error('This chain has no Custos registry.')
   const normalized = validateReportTarget(target)
   let already = false
   try {
