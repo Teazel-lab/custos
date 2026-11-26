@@ -13,7 +13,7 @@ const SECRET_KEYS = new Set([
 ])
 
 /**
- * Keyless while the hackathon is free. API keys and plans can reject here later
+ * Keyless while the API stays free. API keys and plans can reject here later
  * without changing the route. Authorization is read so the header stays part of the contract.
  */
 export function authorize(request: Request): Access {

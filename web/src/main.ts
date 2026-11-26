@@ -3,7 +3,7 @@ import '@fontsource/plus-jakarta-sans/latin-500.css'
 import '@fontsource/plus-jakarta-sans/latin-600.css'
 import '@fontsource/plus-jakarta-sans/latin-700.css'
 import { el, shortAddress } from './dom'
-import { renderActivate, renderLanding, renderMissing, renderReport, renderScanner } from './pages'
+import { renderActivate, renderDocs, renderLanding, renderMissing, renderReport, renderScanner } from './pages'
 import { currentPath, onRoute, routeLink } from './router'
 import { startDiscovery, subscribeWallet, walletState } from './wallet'
 import './styles.css'
@@ -13,6 +13,7 @@ const titles: Record<string, string> = {
   '/activate': 'Activate — Custos',
   '/scanner': 'Scanner — Custos',
   '/report': 'Report — Custos',
+  '/docs': 'Docs — Custos',
 }
 
 const pages: Record<string, (root: HTMLElement) => () => void> = {
@@ -20,6 +21,7 @@ const pages: Record<string, (root: HTMLElement) => () => void> = {
   '/activate': renderActivate,
   '/scanner': renderScanner,
   '/report': renderReport,
+  '/docs': renderDocs,
 }
 
 let cleanup = () => {}
@@ -45,7 +47,7 @@ function boot(): void {
       routeLink('/#how', 'How it works'),
       routeLink('/scanner', 'Check'),
       routeLink('/activate', 'Agents'),
-      routeLink('/#docs', 'Docs'),
+      routeLink('/docs', 'Docs'),
     ],
   })
   const nav = el('header', {

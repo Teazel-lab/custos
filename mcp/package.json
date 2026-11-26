@@ -1,0 +1,37 @@
+{
+  "name": "custos-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for the Custos pre-sign transaction check on BNB Chain and Base.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "custos-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Teazel-lab/custos.git",
+    "directory": "mcp"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.3",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

@@ -5,7 +5,8 @@ import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 import { applyAddressPaste, buildCheckRequest, EXAMPLE_SENDER, parseCheckResponse, parseReportResponse, reportUrl, severityClass } from '../src/api'
 import { validateReportTarget } from '../src/chain'
-import { CHAINS, contractsReady } from '../src/config'
+import { API_BASE, CHAINS, contractsReady } from '../src/config'
+import { CHECK_CURL, CHECK_FETCH, MCP_CURSOR, VERDICT_RULES } from '../src/snippets'
 import { shouldAddChain, transactionCall } from '../src/wallet'
 
 describe('addresses', () => {
@@ -117,6 +118,22 @@ describe('site copy and chain marks', () => {
       return text.toLowerCase().includes('hackathon') ? [file] : []
     })
     expect(hits).toEqual([])
+  })
+
+  it('points use cases and docs at the live check API', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const pages = readFileSync(join(root, 'src', 'pages.ts'), 'utf8')
+    const main = readFileSync(join(root, 'src', 'main.ts'), 'utf8')
+    expect(pages).toContain("text: 'Use cases'")
+    expect(pages).toContain('renderDocs')
+    expect(main).toContain("'/docs'")
+    expect(CHECK_CURL).toContain(`${API_BASE}/check`)
+    expect(CHECK_FETCH).toContain(`${API_BASE}/check`)
+    expect(CHECK_CURL).toContain('"chainId":97')
+    expect(MCP_CURSOR).toContain('npx')
+    expect(MCP_CURSOR).toContain('custos-mcp')
+    expect(VERDICT_RULES.map((rule) => rule.id)).toEqual(['block', 'warn', 'allow'])
+    expect(pages).not.toContain('hackathon')
   })
 
   it('keeps the official BNB yellow and Base blue marks unchanged', () => {

@@ -1,6 +1,6 @@
 import { addressAt, isAddress, MAX_UINT, selectorOf } from './abi'
 import { decodeCalldata, type DecodedCall } from './calldata'
-import { explain } from './explain'
+import { explain, stateCompleteness } from './explain'
 import { HttpError } from './http'
 import { providerReason, UNSUPPORTED_TESTNET } from './messages'
 import { REGISTRIES, registrySignal, type RegistryState } from './registry'
@@ -81,7 +81,7 @@ export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promi
     providers,
     reasons,
     simulation: sim.simulation,
-    explanation: await explain(env, judged.verdict, reasons, deadline),
+    explanation: stateCompleteness(judged.complete, await explain(env, judged.verdict, reasons, deadline)),
     checkedAt: new Date().toISOString(),
   }
 }

@@ -23,7 +23,8 @@ import {
 } from '../src/goplus'
 import { GOPLUS_ADDRESS_CLEAN_TTL, GOPLUS_EMPTY_TTL, GOPLUS_RECORD_TTL, GOPLUS_TIMEOUT_MS, honeypotTtl } from '../src/reputation'
 import { handle } from '../src/index'
-import { WALLET_SENTENCE } from '../src/messages'
+import { stateCompleteness } from '../src/explain'
+import { INCOMPLETE_NOTE, providerReason, WALLET_SENTENCE } from '../src/messages'
 import { clientKey } from '../src/ratelimit'
 import { classifyRpcError, rpc, RpcError } from '../src/rpc'
 import { withTimeout } from '../src/time'
@@ -444,7 +445,8 @@ describe('POST /check', () => {
       const failed = body.reasons.find((reason) => reason.message.startsWith('GoPlus'))
       expect(failed?.code).toBe('provider_failed')
       expect(failed?.severity).toBe('info')
-      expect(failed?.message).toContain('GoPlus network error')
+      expect(failed?.message).toContain('(network error)')
+      expect(failed?.message).not.toMatch(/incomplete/i)
     } finally {
       calls.restore()
     }
@@ -980,7 +982,7 @@ describe('review regressions', () => {
       const secondBody = (await second.json()) as CheckBody
       expect(firstBody.reasons.map((reason) => reason.code)).toContain('provider_failed')
       expect(secondBody.reasons.map((reason) => reason.code)).toContain('provider_failed')
-      const cause = 'ScamSniffer network error'
+      const cause = '(network error)'
       expect(firstBody.reasons.find((reason) => reason.message.startsWith('ScamSniffer'))?.message).toContain(cause)
       expect(secondBody.reasons.find((reason) => reason.message.startsWith('ScamSniffer'))?.message).toContain(cause)
     } finally {
@@ -1140,6 +1142,9 @@ describe('review regressions', () => {
       const body = await response.json() as CheckBody
       const failed = body.reasons.find((reason) => reason.code === 'provider_failed')
       expect(failed?.severity).toBe('info')
+      expect(failed?.message).not.toMatch(/incomplete/i)
+      expect(body.reasons.every((reason) => !/incomplete/i.test(reason.message))).toBe(true)
+      expect(body.explanation).toContain(INCOMPLETE_NOTE)
       expect(body.simulation.mode).toBe('simulate')
       expect(body.complete).toBe(false)
       expect(body.verdict).toBe('warn')
@@ -1200,6 +1205,21 @@ describe('GoPlus auth', () => {
     expect(GOPLUS_TOKEN_SKEW_SECONDS).toBe(60)
     expect(providerDetail(new SyntaxError('bad json'), 'GoPlus')).toBe('GoPlus error')
     expect(providerDetail(new TypeError('fetch failed'), 'GoPlus')).toBe('GoPlus network error')
+    expect(providerReason('GoPlus', 'GoPlus rate limited').message).toBe(
+      'GoPlus did not answer (rate limited); other providers were used where possible.',
+    )
+    expect(providerReason('GoPlus', 'GoPlus code 4029').message).toBe(
+      'GoPlus did not answer (code 4029); other providers were used where possible.',
+    )
+    expect(providerReason('Honeypot').message).toBe('Honeypot did not answer; other providers were used where possible.')
+    expect(providerReason('GoPlus', 'empty result').message).toBe(
+      'GoPlus did not answer (empty result); other providers were used where possible.',
+    )
+    expect(providerReason('ScamSniffer', 'ScamSniffer HTTP 502').message).not.toMatch(/incomplete/i)
+    const covered = `Verdict: safe. ${providerReason('GoPlus', 'GoPlus rate limited').message} ${WALLET_SENTENCE}`
+    expect(stateCompleteness(true, covered)).toBe(covered)
+    expect(stateCompleteness(true, covered)).not.toMatch(/incomplete/i)
+    expect(stateCompleteness(false, `Verdict: warn. ${WALLET_SENTENCE}`)).toContain(INCOMPLETE_NOTE)
   })
 
   it('sends a User-Agent and skips the token call when secrets are absent', async () => {
@@ -1332,7 +1352,7 @@ describe('GoPlus auth', () => {
       const text = await response.text()
       const body = JSON.parse(text) as CheckBody
       const failed = body.reasons.find((reason) => reason.message.startsWith('GoPlus'))
-      expect(failed?.message).toContain('GoPlus code 4029')
+      expect(failed?.message).toContain('(code 4029)')
       expect(body.complete).toBe(false)
       expectNoSecrets(text)
       const logged = logs.find((line) => line.includes('"code":"4029"')) ?? ''
@@ -1347,7 +1367,7 @@ describe('GoPlus auth', () => {
       try {
         const scamResponse = await post(testEnv(), tx())
         const scamBody = await scamResponse.json() as CheckBody
-        expect(scamBody.reasons.find((reason) => reason.message.startsWith('ScamSniffer'))?.message).toContain('ScamSniffer HTTP 502')
+        expect(scamBody.reasons.find((reason) => reason.message.startsWith('ScamSniffer'))?.message).toContain('(HTTP 502)')
         expect(logs.some((line) => line.includes('"provider":"ScamSniffer"') && line.includes('"status":502'))).toBe(true)
       } finally {
         scam.restore()
@@ -1507,7 +1527,7 @@ describe('GoPlus auth', () => {
       const text = await response.text()
       const body = JSON.parse(text) as CheckBody
       expect(body.complete).toBe(false)
-      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus HTTP 500')
+      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('(HTTP 500)')
       expect(dataCalls).toBe(2)
       expect([...env.CACHE.expirations.keys()].some((key) => key.endsWith(':noauth'))).toBe(false)
       expectNoSecrets(`${text}\n${logs.join('\n')}`)
@@ -1534,7 +1554,7 @@ describe('GoPlus auth', () => {
       const response = await post(testEnv(), tx('0x', 56))
       const text = await response.text()
       const body = JSON.parse(text) as CheckBody
-      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus code 4012')
+      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('(code 4012)')
       expect(dataCalls).toBe(1)
       expect(calls.some((url) => url === GOPLUS_TOKEN_URL)).toBe(false)
       expectNoSecrets(`${text}\n${logs.join('\n')}`)
@@ -1639,7 +1659,7 @@ describe('GoPlus auth', () => {
     try {
       const response = await post(testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET }), tx('0x', 56))
       const body = await response.json() as CheckBody
-      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus HTTP 403')
+      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('(HTTP 403)')
       expect(tokenPosts).toBe(1)
       expect(addressCalls).toBe(1)
     } finally {
@@ -1729,7 +1749,7 @@ describe('GoPlus auth', () => {
       expect(dataCalls).toBe(2)
       expect(firstBody.complete).toBe(false)
       expect(firstBody.verdict).toBe('warn')
-      expect(firstBody.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus code 4029')
+      expect(firstBody.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('(code 4029)')
       expect(env.CACHE.expirations.get(GOPLUS_RATE_LIMIT_KEY)).toBe(GOPLUS_RATE_LIMIT_SECONDS)
       const during = dataCalls
       const second = await post(env, tx('0x', 56, { to: SPENDER }))
@@ -1738,7 +1758,7 @@ describe('GoPlus auth', () => {
       expect(dataCalls).toBe(during)
       expect(secondBody.complete).toBe(false)
       expect(secondBody.verdict).toBe('warn')
-      expect(secondBody.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus rate limited')
+      expect(secondBody.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('(rate limited)')
       expectNoSecrets(`${firstText}\n${secondText}\n${logs.join('\n')}`)
     } finally {
       clearGoPlusRateLimitForTests()
@@ -1768,7 +1788,7 @@ describe('GoPlus auth', () => {
       const second = await post(env, tx('0x', 56, { to: SPENDER }))
       const secondBody = await second.json() as CheckBody
       expect(dataCalls).toBe(during)
-      expect(secondBody.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus rate limited')
+      expect(secondBody.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('(rate limited)')
     } finally {
       clearGoPlusRateLimitForTests()
       calls.restore()
@@ -1820,7 +1840,7 @@ describe('GoPlus auth', () => {
       const text = await response.text()
       const body = JSON.parse(text) as CheckBody
       expect(body.complete).toBe(false)
-      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus code 4022')
+      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('(code 4022)')
       expect(authorizations).toEqual([ACCESS_TOKEN, ROTATED_TOKEN])
       expect([...env.CACHE.expirations.keys()].some((key) => key.endsWith(':noauth'))).toBe(false)
       expectNoSecrets(`${text}\n${logs.join('\n')}`)
@@ -1850,7 +1870,7 @@ describe('GoPlus auth', () => {
       const response = await post(env, tx('0x', 56))
       const body = await response.json() as CheckBody
       expect(body.complete).toBe(false)
-      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus HTTP 401')
+      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('(HTTP 401)')
       expect(tokenPosts).toBe(2)
       expect(authorizations).toEqual([ACCESS_TOKEN, ROTATED_TOKEN])
       expect([...env.CACHE.expirations.keys()].some((key) => key.endsWith(':noauth'))).toBe(false)
@@ -2118,8 +2138,8 @@ describe('GoPlus auth', () => {
       const secondBody = await second.json() as CheckBody
       expect(downloads).toBe(1)
       expect(env.CACHE.expirations.get('scam:fail')).toBe(300)
-      expect(firstBody.reasons.find((reason) => reason.message.startsWith('ScamSniffer'))?.message).toContain('ScamSniffer timeout')
-      expect(secondBody.reasons.find((reason) => reason.message.startsWith('ScamSniffer'))?.message).toContain('ScamSniffer timeout')
+      expect(firstBody.reasons.find((reason) => reason.message.startsWith('ScamSniffer'))?.message).toContain('(timeout)')
+      expect(secondBody.reasons.find((reason) => reason.message.startsWith('ScamSniffer'))?.message).toContain('(timeout)')
     } finally {
       calls.restore()
     }
@@ -2133,7 +2153,7 @@ describe('GoPlus auth', () => {
     try {
       const response = await post(testEnv(), tx('0x', 56))
       const body = await response.json() as CheckBody
-      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus timeout')
+      expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('(timeout)')
     } finally {
       timedOut.restore()
     }
@@ -2252,6 +2272,11 @@ describe('GoPlus auth', () => {
       expect(body.complete).toBe(true)
       expect(body.providers?.honeypot).toBe('answered')
       expect(body.providers?.goplus).toBe('failed')
+      const missed = body.reasons.find((reason) => reason.message.startsWith('GoPlus'))
+      expect(missed?.message).toMatch(/other providers were used where possible/)
+      expect(missed?.message).not.toMatch(/incomplete/i)
+      expect(body.reasons.every((reason) => !/incomplete/i.test(reason.message))).toBe(true)
+      expect(body.explanation).not.toMatch(/incomplete/i)
     } finally {
       clearGoPlusRateLimitForTests()
       calls.restore()
