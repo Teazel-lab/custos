@@ -1,15 +1,20 @@
-import { isAddress, MAX_UINT } from './abi'
+import { addressAt, isAddress, MAX_UINT, selectorOf } from './abi'
 import { decodeCalldata, type DecodedCall } from './calldata'
 import { explain } from './explain'
 import { HttpError } from './http'
 import { providerReason, UNSUPPORTED_TESTNET } from './messages'
 import { REGISTRIES, registrySignal, type RegistryState } from './registry'
 import { checkAddresses, checkTokens, type AddressReputation, type TokenReputation } from './reputation'
+import { codeKind, getCode } from './rpc'
 import { callModeReasons, simulate, type SimulationResult } from './simulate'
 import type { AppEnv, CheckResponse, ProviderState, Providers, Reason, Tx, Verdict } from './types'
 
 const TOKEN_CAP = 5
 const ADDRESS_CAP = 8
+const TRANSFER = 'a9059cbb'
+const TRANSFER_FROM = '23b872dd'
+const SAFE_TRANSFER = '42842e0e'
+const SAFE_TRANSFER_DATA = 'b88d4fde'
 const DEADLINE_MS = 10_000
 const ZERO = '0x' + '0'.repeat(40)
 const ALLOWED_FIELDS = new Set(['chainId', 'from', 'to', 'data', 'value'])
@@ -17,18 +22,18 @@ const ALLOWED_FIELDS = new Set(['chainId', 'from', 'to', 'data', 'value'])
 export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promise<CheckResponse> {
   const deadline = parent ?? AbortSignal.timeout(DEADLINE_MS)
   const decoded = decodeCalldata(tx)
-  const tokens = unique(decoded.tokens).slice(0, TOKEN_CAP)
+  const decodedTokens = unique(decoded.tokens)
+  const tokens = decodedTokens.slice(0, TOKEN_CAP)
   const addresses = unique([tx.to, ...decoded.spenders]).slice(0, ADDRESS_CAP)
   const [sim, registry, addressRep, tokenRep] = await Promise.all([
     settleSimulation(env, tx, decoded, deadline),
     registrySignal(env, tx.chainId, addresses, deadline).catch(() => failedRegistry()),
-    checkAddresses(env, tx.chainId, addresses, deadline).catch(() => failedAddresses()),
+    checkAddresses(env, tx.chainId, addresses, deadline).catch(() => failedAddresses(addresses)),
     checkTokens(env, tx.chainId, tokens, deadline, tx.to).catch(() => failedTokens(tokens)),
   ])
 
-  const moreTokens = unique(sim.tokens)
-    .filter((token) => !tokens.includes(token))
-    .slice(0, Math.max(0, TOKEN_CAP - tokens.length))
+  const simulatedTokens = unique(sim.tokens).filter((token) => !decodedTokens.includes(token))
+  const moreTokens = simulatedTokens.slice(0, Math.max(0, TOKEN_CAP - tokens.length))
   const moreAddresses = unique(sim.spenders)
     .filter((address) => !addresses.includes(address))
     .slice(0, Math.max(0, ADDRESS_CAP - addresses.length))
@@ -37,7 +42,7 @@ export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promi
       ? checkTokens(env, tx.chainId, moreTokens, deadline, tx.to).catch(() => failedTokens(moreTokens))
       : emptyTokens(),
     moreAddresses.length
-      ? checkAddresses(env, tx.chainId, moreAddresses, deadline).catch(() => failedAddresses())
+      ? checkAddresses(env, tx.chainId, moreAddresses, deadline).catch(() => failedAddresses(moreAddresses))
       : emptyAddresses(),
     moreAddresses.length && REGISTRIES[tx.chainId]
       ? registrySignal(env, tx.chainId, moreAddresses, deadline).catch(() => failedRegistry())
@@ -61,8 +66,13 @@ export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promi
     scamSniffer: worse(addressRep.scamSniffer, extraAddresses.scamSniffer),
     registry: registryState(registry.state, extraRegistry.state),
   }
-  const tokenGap = tokenRep.uncovered.length > 0 || extraTokens.uncovered.length > 0
-  const judged = applyReputationCap(judge(reasons), providers, tokenGap)
+  const tokenGap =
+    decodedTokens.length > tokens.length ||
+    simulatedTokens.length > moreTokens.length ||
+    tokenRep.uncovered.length > 0 ||
+    extraTokens.uncovered.length > 0
+  const addressGap = await goplusAddressGap(env, tx, decoded, sim, [addressRep, extraAddresses], deadline)
+  const judged = applyReputationCap(judge(reasons), providers, tokenGap || addressGap)
   return {
     verdict: judged.verdict,
     score: judged.score,
@@ -76,9 +86,10 @@ export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promi
 }
 
 /**
- * A GoPlus miss stays in the reason list, but it does not make the check
- * incomplete when Honeypot.is covered every token and ScamSniffer answered.
- * ScamSniffer is unchanged: its failure still caps a safe verdict at warn.
+ * Token coverage is a complete GoPlus token record or a usable Honeypot.is simulation.
+ * An incomplete GoPlus row does not cover the token. Dropping a token past the cap does not either.
+ * GoPlus address_security must answer for an allowance spender and for a contract `to`,
+ * except a plain native or ERC-20 transfer to an EOA. ScamSniffer failure still caps a safe verdict.
  */
 function applyReputationCap(
   judged: { verdict: Verdict; score: number },
@@ -108,7 +119,7 @@ function emptyTokens(): TokenReputation {
 }
 
 function emptyAddresses(): AddressReputation {
-  return { reasons: [], scamSniffer: 'skipped', goplus: 'skipped' }
+  return { reasons: [], scamSniffer: 'skipped', goplus: 'skipped', goplusFailed: [] }
 }
 
 function failedTokens(tokens: string[]): TokenReputation {
@@ -120,8 +131,60 @@ function failedTokens(tokens: string[]): TokenReputation {
   }
 }
 
-function failedAddresses(): AddressReputation {
-  return { reasons: [providerReason('Address reputation')], scamSniffer: 'failed', goplus: 'failed' }
+function failedAddresses(addresses: string[]): AddressReputation {
+  return {
+    reasons: [providerReason('Address reputation')],
+    scamSniffer: 'failed',
+    goplus: 'failed',
+    goplusFailed: unique(addresses),
+  }
+}
+
+/**
+ * Allowance and operator recipients always need an address check.
+ * So does a contract `to`, except a plain transfer whose recipient is an EOA.
+ */
+async function goplusAddressGap(
+  env: AppEnv,
+  tx: Tx,
+  decoded: DecodedCall,
+  sim: SimulationResult,
+  reports: AddressReputation[],
+  signal: AbortSignal,
+): Promise<boolean> {
+  const failed = new Set(reports.flatMap((report) => report.goplusFailed))
+  if (failed.size === 0) return false
+  const sensitive = new Set<string>()
+  for (const approval of [...decoded.approvals, ...sim.simulation.approvals]) {
+    const spender = approval.spender.toLowerCase()
+    if (isAddress(spender) && spender !== ZERO) sensitive.add(spender)
+  }
+  if (await contractToNeedsAddress(env, tx, signal)) sensitive.add(tx.to.toLowerCase())
+  for (const address of sensitive) {
+    if (failed.has(address)) return true
+  }
+  return false
+}
+
+async function contractToNeedsAddress(env: AppEnv, tx: Tx, signal: AbortSignal): Promise<boolean> {
+  const selector = selectorOf(tx.data)
+  if (selector.length === 0) return (await addressKind(env, tx, tx.to, signal)) === 'contract'
+  if (selector === TRANSFER || selector === TRANSFER_FROM || selector === SAFE_TRANSFER || selector === SAFE_TRANSFER_DATA) {
+    const recipient = addressAt(tx.data, selector === TRANSFER ? 0 : 1)
+    if (recipient) {
+      const kind = await addressKind(env, tx, recipient, signal)
+      if (kind === 'eoa' || kind === 'delegated') return false
+    }
+  }
+  return (await addressKind(env, tx, tx.to, signal)) === 'contract'
+}
+
+async function addressKind(env: AppEnv, tx: Tx, address: string, signal: AbortSignal) {
+  try {
+    return codeKind(await getCode(env, tx.chainId, address, signal))
+  } catch {
+    return 'unknown' as const
+  }
 }
 
 function failedRegistry(): { reasons: Reason[]; state: RegistryState } {

@@ -45,6 +45,8 @@ export interface AddressReputation {
   reasons: Reason[]
   scamSniffer: ProviderState
   goplus: ProviderState
+  /** Addresses whose GoPlus address_security call failed, including a 4029 cooldown. */
+  goplusFailed: string[]
 }
 
 const SKIPPED_TOKENS: TokenReputation = { reasons: [], uncovered: [], honeypot: 'skipped', goplus: 'skipped' }
@@ -78,17 +80,25 @@ export async function checkAddresses(
   signal?: AbortSignal,
 ): Promise<AddressReputation> {
   const unique = cap(addresses, 8)
-  if (unique.length === 0) return { reasons: [], scamSniffer: 'skipped', goplus: 'skipped' }
+  if (unique.length === 0) return { reasons: [], scamSniffer: 'skipped', goplus: 'skipped', goplusFailed: [] }
   const scam = await scamReasons(env, unique, signal).catch((err) => [
     providerReason('ScamSniffer', providerDetail(err, 'ScamSniffer')),
   ])
   const scamSniffer: ProviderState = scam.some((reason) => reason.code === 'provider_failed') ? 'failed' : 'answered'
-  if (!chainProfile(chainId).tokenReputation) return { reasons: scam, scamSniffer, goplus: 'skipped' }
-  const goplus = await goplusAddressReasons(env, chainId, unique, signal).catch((err) => [
-    providerReason('GoPlus', providerDetail(err, 'GoPlus')),
-  ])
-  const goplusState: ProviderState = goplus.some((reason) => reason.code === 'provider_failed') ? 'failed' : 'answered'
-  return { reasons: [...goplus, ...scam], scamSniffer, goplus: goplusState }
+  if (!chainProfile(chainId).tokenReputation) {
+    return { reasons: scam, scamSniffer, goplus: 'skipped', goplusFailed: [] }
+  }
+  const goplus = await goplusAddressReasons(env, chainId, unique, signal).catch((err) => ({
+    reasons: [providerReason('GoPlus', providerDetail(err, 'GoPlus'))],
+    failed: unique,
+  }))
+  const goplusState: ProviderState = goplus.reasons.some((reason) => reason.code === 'provider_failed') ? 'failed' : 'answered'
+  return {
+    reasons: [...goplus.reasons, ...scam],
+    scamSniffer,
+    goplus: goplusState,
+    goplusFailed: goplus.failed,
+  }
 }
 
 interface HoneypotRead {
@@ -119,7 +129,7 @@ async function honeypotReasons(
           failed = true
           return
         }
-        covered.add(token)
+        if (honeypotCovers(body)) covered.add(token)
         const flag = body.honeypotResult?.isHoneypot
         if (flag === true || flag === 'true') {
           reasons.push({
@@ -176,15 +186,29 @@ async function readHoneypot(
   return body
 }
 
-/** Flagged answers stay for 6 hours, a clean simulation for 30 minutes, a partial body for 90 seconds. */
+/**
+ * A usable simulation is cached like a GoPlus record: flagged for 6 hours, clean for 30 minutes.
+ * A known honeypot flag with a failed or incomplete simulation is cached for 90 seconds and does not count as coverage.
+ */
 export function honeypotTtl(body: HoneypotBody): number | null {
   if (!honeypotKnown(body.honeypotResult?.isHoneypot)) return null
+  if (!honeypotCovers(body)) return GOPLUS_EMPTY_TTL
   const tax = Number(body.simulationResult?.sellTax)
-  if (!Number.isFinite(tax)) return GOPLUS_EMPTY_TTL
   if (body.honeypotResult?.isHoneypot === true || body.honeypotResult?.isHoneypot === 'true' || tax > 20 || cannotSell(body)) {
     return GOPLUS_RECORD_TTL
   }
   return GOPLUS_ADDRESS_CLEAN_TTL
+}
+
+/** Coverage needs a simulation that ran and finite taxes. Flags can still be raised without it. */
+function honeypotCovers(body: HoneypotBody): boolean {
+  if (!honeypotKnown(body.honeypotResult?.isHoneypot)) return false
+  if (body.simulationSuccess === false) return false
+  const sell = Number(body.simulationResult?.sellTax)
+  if (!Number.isFinite(sell)) return false
+  const buy = body.simulationResult?.buyTax
+  if (buy !== undefined && !Number.isFinite(Number(buy))) return false
+  return true
 }
 
 function honeypotKnown(flag: boolean | string | undefined): boolean {
@@ -208,6 +232,7 @@ async function goplusTokenReasons(
   try {
     const loaded = await loadGoPlusTokenRecords(env, chainId, tokens, signal)
     const reasons: Reason[] = []
+    const covered = new Set<string>()
     for (const token of tokens) {
       const record = loaded.records.get(token)
       if (!record) continue
@@ -221,6 +246,7 @@ async function goplusTokenReasons(
           message: `Token ${token} may not be fully sellable.`,
         })
       }
+      if (tokenComplete(record)) covered.add(token)
     }
     const wanted = target?.toLowerCase()
     if (wanted && loaded.absent.has(wanted) && !knownToken(chainId, wanted)) {
@@ -230,7 +256,7 @@ async function goplusTokenReasons(
         message: `Token ${wanted} has no GoPlus record.`,
       })
     }
-    return { reasons, covered: new Set(loaded.records.keys()), state: 'answered' }
+    return { reasons, covered, state: 'answered' }
   } catch (err) {
     return {
       reasons: [providerReason('GoPlus', providerDetail(err, 'GoPlus'))],
@@ -249,9 +275,9 @@ async function goplusAddressReasons(
   chainId: ChainId,
   addresses: string[],
   signal?: AbortSignal,
-): Promise<Reason[]> {
+): Promise<{ reasons: Reason[]; failed: string[] }> {
   const reasons: Reason[] = []
-  let failed = false
+  const failed: string[] = []
   let detail: string | undefined
   await Promise.all(
     addresses.map(async (address) => {
@@ -265,13 +291,13 @@ async function goplusAddressReasons(
           })
         }
       } catch (err) {
-        failed = true
+        failed.push(address)
         detail ??= providerDetail(err, 'GoPlus')
       }
     }),
   )
-  if (failed) reasons.push(providerReason('GoPlus', detail))
-  return reasons
+  if (failed.length > 0) reasons.push(providerReason('GoPlus', detail))
+  return { reasons, failed }
 }
 
 async function scamReasons(env: AppEnv, addresses: string[], signal?: AbortSignal): Promise<Reason[]> {
@@ -483,5 +509,10 @@ function cap(values: string[], limit = 5): string[] {
 
 interface HoneypotBody {
   honeypotResult?: { isHoneypot?: boolean | string }
-  simulationResult?: { sellTax?: number | string; maxSell?: { token?: number; tokenWei?: string } }
+  simulationSuccess?: boolean
+  simulationResult?: {
+    sellTax?: number | string
+    buyTax?: number | string
+    maxSell?: { token?: number; tokenWei?: string }
+  }
 }
