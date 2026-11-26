@@ -1,6 +1,6 @@
 {
   "name": "custosprotocol-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server for the Custos pre-sign transaction check on BNB Chain and Base.",
   "license": "MIT",
   "keywords": [
@@ -14,7 +14,7 @@
   "homepage": "https://custosprotocol.com",
   "type": "module",
   "bin": {
-    "custosprotocol-mcp": "./dist/index.js"
+    "custosprotocol-mcp": "dist/index.js"
   },
   "files": [
     "dist",
