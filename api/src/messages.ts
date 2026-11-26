@@ -18,6 +18,8 @@ export const UNKNOWN_CALLDATA =
 export const VALUE_UNSIMULATED = 'Native value was not simulated. Call mode cannot see where it goes.'
 export const UNSUPPORTED_TESTNET =
   'Honeypot.is and GoPlus do not cover this testnet. Those checks were skipped.'
+export const REGISTRY_BASE =
+  'The Custos registry and Agent ID are on BNB Chain. This Base check does not use them.'
 
 export function providerReason(name: string, detail?: string): Reason {
   const cause = detail ? ` (${detail})` : ''

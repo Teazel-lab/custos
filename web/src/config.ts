@@ -1,6 +1,6 @@
 import { getAddress, type Address } from 'viem'
 
-export type ChainId = 56 | 97
+export type ChainId = 56 | 97 | 8453
 
 export interface ChainConfig {
   id: ChainId
@@ -8,8 +8,10 @@ export interface ChainConfig {
   short: string
   rpc: string
   explorer: string
-  /** Agent ID token. Mainnet is the soulbound registry. Testnet is MockAgentID. */
-  agentId: Address
+  explorerName: string
+  native: { name: string; symbol: string }
+  /** Agent ID token. Mainnet is the soulbound registry. Testnet is MockAgentID. Null on Base. */
+  agentId: Address | null
   /** False on the testnet mock, which only implements balanceOf. */
   agentIdHasHandle: boolean
   /** Empty until that contract is deployed. A later fill-in is this one field. */
@@ -24,6 +26,8 @@ export const CHAINS: Record<ChainId, ChainConfig> = {
     short: 'BSC',
     rpc: 'https://bsc-dataseed.bnbchain.org',
     explorer: 'https://bscscan.com',
+    explorerName: 'BscScan',
+    native: { name: 'BNB', symbol: 'BNB' },
     agentId: getAddress('0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F'),
     agentIdHasHandle: true,
     hub: null,
@@ -35,10 +39,25 @@ export const CHAINS: Record<ChainId, ChainConfig> = {
     short: 'BSC Testnet',
     rpc: 'https://bsc-testnet.publicnode.com',
     explorer: 'https://testnet.bscscan.com',
+    explorerName: 'BscScan',
+    native: { name: 'BNB', symbol: 'tBNB' },
     agentId: getAddress('0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945'),
     agentIdHasHandle: false,
     hub: getAddress('0x062D0452187094C1B2dd546B6a793A50eBDBfd06'),
     registry: getAddress('0x14df99CEa96C8f0980cA0aF46CB5d30de782353A'),
+  },
+  8453: {
+    id: 8453,
+    name: 'Base',
+    short: 'Base',
+    rpc: 'https://mainnet.base.org',
+    explorer: 'https://basescan.org',
+    explorerName: 'Basescan',
+    native: { name: 'Ether', symbol: 'ETH' },
+    agentId: null,
+    agentIdHasHandle: false,
+    hub: null,
+    registry: null,
   },
 }
 
@@ -63,7 +82,9 @@ export function contractsReady(chainId: ChainId): boolean {
 }
 
 export function chainHex(chainId: ChainId): string {
-  return chainId === 56 ? '0x38' : '0x61'
+  if (chainId === 56) return '0x38'
+  if (chainId === 8453) return '0x2105'
+  return '0x61'
 }
 
 export function addChainParams(chainId: ChainId): {
@@ -77,7 +98,7 @@ export function addChainParams(chainId: ChainId): {
   return {
     chainId: chainHex(chainId),
     chainName: chain.name,
-    nativeCurrency: { name: 'BNB', symbol: chainId === 56 ? 'BNB' : 'tBNB', decimals: 18 },
+    nativeCurrency: { name: chain.native.name, symbol: chain.native.symbol, decimals: 18 },
     rpcUrls: [chain.rpc],
     blockExplorerUrls: [chain.explorer],
   }

@@ -1,11 +1,7 @@
 import { decodeRevertData } from './abi'
 import { cacheGet, cachePut } from './cache'
+import { chainProfile } from './chains'
 import type { AppEnv, ChainId } from './types'
-
-const PUBLIC_RPC: Record<ChainId, string> = {
-  56: 'https://bsc.publicnode.com',
-  97: 'https://bsc-testnet.publicnode.com',
-}
 
 const ALLOWED = new Set([
   'debug_traceCall',
@@ -33,17 +29,29 @@ export class RpcError extends Error {
 
 export type RpcFailure = 'revert' | 'rejected' | 'transport'
 
-/** Plain JSON-RPC for this chain only. A chain 56 URL is never used for chain 97. */
+/** Plain JSON-RPC for this chain only. A chain 56 URL is never used for chain 97 or Base. */
 export function plainRpc(env: AppEnv, chainId: ChainId): string {
-  const configured = (chainId === 56 ? env.RPC_URL_56 : env.RPC_URL_97)?.trim()
+  const configured = rpcUrl(env, chainId)?.trim()
   if (configured) return configured
-  return PUBLIC_RPC[chainId]
+  return chainProfile(chainId).publicRpc
 }
 
 /** Trace endpoint for this chain only. Unset means the trace tier is skipped. */
 export function traceRpc(env: AppEnv, chainId: ChainId): string | undefined {
-  const configured = (chainId === 56 ? env.TRACE_RPC_URL_56 : env.TRACE_RPC_URL_97)?.trim()
+  const configured = traceUrl(env, chainId)?.trim()
   return configured || undefined
+}
+
+function rpcUrl(env: AppEnv, chainId: ChainId): string | undefined {
+  if (chainId === 56) return env.RPC_URL_56
+  if (chainId === 97) return env.RPC_URL_97
+  return env.RPC_URL_8453
+}
+
+function traceUrl(env: AppEnv, chainId: ChainId): string | undefined {
+  if (chainId === 56) return env.TRACE_RPC_URL_56
+  if (chainId === 97) return env.TRACE_RPC_URL_97
+  return env.TRACE_RPC_URL_8453
 }
 
 export function txCall(tx: { from: string; to: string; data: string; value: bigint }): {

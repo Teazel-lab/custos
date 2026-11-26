@@ -21,7 +21,7 @@ import {
   providerDetail,
   signGoPlus,
 } from '../src/goplus'
-import { GOPLUS_ADDRESS_CLEAN_TTL, GOPLUS_EMPTY_TTL, GOPLUS_RECORD_TTL, GOPLUS_TIMEOUT_MS } from '../src/reputation'
+import { GOPLUS_ADDRESS_CLEAN_TTL, GOPLUS_EMPTY_TTL, GOPLUS_RECORD_TTL, GOPLUS_TIMEOUT_MS, honeypotTtl } from '../src/reputation'
 import { handle } from '../src/index'
 import { WALLET_SENTENCE } from '../src/messages'
 import { clientKey } from '../src/ratelimit'
@@ -86,6 +86,8 @@ function testEnv(
     TRACE_RPC_URL_56?: string
     RPC_URL_56?: string
     RPC_URL_97?: string
+    RPC_URL_8453?: string
+    TRACE_RPC_URL_8453?: string
     LLM_API_KEY?: string
     ALLOW_DEV_ORIGINS?: string
     GOPLUS_APP_KEY?: string
@@ -99,6 +101,8 @@ function testEnv(
     LLM_MODEL: 'gpt-4o-mini',
     RPC_URL_56: extra.RPC_URL_56 ?? 'https://rpc.test',
     RPC_URL_97: extra.RPC_URL_97 ?? 'https://rpc.test',
+    RPC_URL_8453: extra.RPC_URL_8453 ?? 'https://rpc.test',
+    TRACE_RPC_URL_8453: extra.TRACE_RPC_URL_8453,
     TRACE_RPC_URL_56: extra.TRACE_RPC_URL_56,
     TRACE_RPC_URL_97: extra.TRACE_RPC_URL_97,
     LLM_API_KEY: extra.LLM_API_KEY,
@@ -172,7 +176,7 @@ function installFetch(onRpc?: (body: RpcRequest) => unknown, onHttp?: (url: stri
   return Object.assign(calls, { restore: () => { globalThis.fetch = original } })
 }
 
-function tx(data = '0x', chainId: 56 | 97 = 97, extra: Record<string, unknown> = {}) {
+function tx(data = '0x', chainId: 56 | 97 | 8453 = 97, extra: Record<string, unknown> = {}) {
   return { chainId, from: USER, to: TOKEN, data, value: '0', ...extra }
 }
 
@@ -336,7 +340,7 @@ describe('POST /check', () => {
       expect(body.simulation.success).toBe(true)
       expect(body.simulation.assetChanges).toEqual([
         { asset: TOKEN, from: USER, to: SPENDER, amount: '5' },
-        { asset: 'native', from: USER, to: SPENDER, amount: '1' },
+        { asset: 'tBNB', from: USER, to: SPENDER, amount: '1' },
       ])
       expect(body.simulation.approvals.map((approval) => approval.unlimited)).toEqual([true, true])
       expect(body.reasons.map((reason) => reason.code)).toEqual(expect.arrayContaining(['unlimited_approval', 'approval_for_all']))
@@ -1329,7 +1333,7 @@ describe('GoPlus auth', () => {
       const body = JSON.parse(text) as CheckBody
       const failed = body.reasons.find((reason) => reason.message.startsWith('GoPlus'))
       expect(failed?.message).toContain('GoPlus code 4029')
-      expect(body.complete).toBe(false)
+      expect(body.complete).toBe(true)
       expectNoSecrets(text)
       const logged = logs.find((line) => line.includes('"code":"4029"')) ?? ''
       expect(logged).toContain('[redacted]')
@@ -1502,7 +1506,7 @@ describe('GoPlus auth', () => {
       const response = await post(env, tx('0x', 56))
       const text = await response.text()
       const body = JSON.parse(text) as CheckBody
-      expect(body.complete).toBe(false)
+      expect(body.complete).toBe(true)
       expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus HTTP 500')
       expect(dataCalls).toBe(2)
       expect([...env.CACHE.expirations.keys()].some((key) => key.endsWith(':noauth'))).toBe(false)
@@ -1722,7 +1726,7 @@ describe('GoPlus auth', () => {
       const firstBody = JSON.parse(firstText) as CheckBody
       expect(Date.now() - started).toBeGreaterThanOrEqual(GOPLUS_RATE_LIMIT_DELAY_MIN_MS)
       expect(dataCalls).toBe(2)
-      expect(firstBody.complete).toBe(false)
+      expect(firstBody.complete).toBe(true)
       expect(firstBody.verdict).toBe('warn')
       expect(firstBody.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus code 4029')
       expect(env.CACHE.expirations.get(GOPLUS_RATE_LIMIT_KEY)).toBe(GOPLUS_RATE_LIMIT_SECONDS)
@@ -1731,7 +1735,7 @@ describe('GoPlus auth', () => {
       const secondText = await second.text()
       const secondBody = JSON.parse(secondText) as CheckBody
       expect(dataCalls).toBe(during)
-      expect(secondBody.complete).toBe(false)
+      expect(secondBody.complete).toBe(true)
       expect(secondBody.verdict).toBe('warn')
       expect(secondBody.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus rate limited')
       expectNoSecrets(`${firstText}\n${secondText}\n${logs.join('\n')}`)
@@ -1814,7 +1818,7 @@ describe('GoPlus auth', () => {
       const response = await post(env, tx('0x', 56))
       const text = await response.text()
       const body = JSON.parse(text) as CheckBody
-      expect(body.complete).toBe(false)
+      expect(body.complete).toBe(true)
       expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus code 4022')
       expect(authorizations).toEqual([ACCESS_TOKEN, ROTATED_TOKEN])
       expect([...env.CACHE.expirations.keys()].some((key) => key.endsWith(':noauth'))).toBe(false)
@@ -1844,7 +1848,7 @@ describe('GoPlus auth', () => {
     try {
       const response = await post(env, tx('0x', 56))
       const body = await response.json() as CheckBody
-      expect(body.complete).toBe(false)
+      expect(body.complete).toBe(true)
       expect(body.reasons.find((reason) => reason.message.startsWith('GoPlus'))?.message).toContain('GoPlus HTTP 401')
       expect(tokenPosts).toBe(2)
       expect(authorizations).toEqual([ACCESS_TOKEN, ROTATED_TOKEN])
@@ -2089,7 +2093,7 @@ describe('GoPlus auth', () => {
     try {
       const response = await post(env, tx('0x', 56))
       const body = await response.json() as CheckBody
-      expect(body.complete).toBe(false)
+      expect(body.complete).toBe(true)
       expect(dataCalls).toBe(3)
       const marker = [...env.CACHE.expirations.entries()].find(([key]) => key.endsWith(':noauth'))
       expect(marker?.[1]).toBe(GOPLUS_TOKEN_BACKOFF_SECONDS)
@@ -2134,6 +2138,163 @@ describe('GoPlus auth', () => {
     }
   })
 
+  it('caches Honeypot.is by how complete the answer is and skips a miss', async () => {
+    expect(honeypotTtl({ honeypotResult: { isHoneypot: true }, simulationResult: { sellTax: 40, maxSell: { token: 0 } } })).toBe(GOPLUS_RECORD_TTL)
+    expect(honeypotTtl({ honeypotResult: { isHoneypot: false }, simulationResult: { sellTax: 0 } })).toBe(GOPLUS_ADDRESS_CLEAN_TTL)
+    expect(honeypotTtl({ honeypotResult: { isHoneypot: false } })).toBe(GOPLUS_EMPTY_TTL)
+    expect(honeypotTtl({})).toBeNull()
+    const env = testEnv()
+    let honeypotCalls = 0
+    const other = '0x0000000000000000000000000000000000000004'
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        return undefined
+      },
+      (url) => {
+        if (!url.startsWith('https://api.honeypot.is/')) return undefined
+        honeypotCalls += 1
+        if (url.includes(other)) return new Response('no', { status: 500 })
+        if (url.includes(SPENDER)) return { honeypotResult: { isHoneypot: false } }
+        return { honeypotResult: { isHoneypot: true }, simulationResult: { sellTax: 40, maxSell: { token: 0, tokenWei: '0' } } }
+      },
+    )
+    try {
+      const approval = encode('095ea7b3', [BigInt(USER), 1n])
+      const flagged = await post(env, tx(approval, 56, { to: TOKEN }))
+      const flaggedBody = await flagged.json() as CheckBody
+      const codes = flaggedBody.reasons.map((reason) => reason.code)
+      expect(flaggedBody.verdict).toBe('danger')
+      expect(codes).toContain('honeypot')
+      expect(codes).toContain('cannot_sell')
+      expect(codes).toContain('high_tax')
+      expect(env.CACHE.expirations.get(`honeypot:56:${TOKEN}`)).toBe(GOPLUS_RECORD_TTL)
+      const partial = await post(env, tx(approval, 56, { to: SPENDER }))
+      const partialBody = await partial.json() as CheckBody
+      expect(partialBody.reasons.map((reason) => reason.code)).not.toContain('honeypot')
+      expect(env.CACHE.expirations.get(`honeypot:56:${SPENDER}`)).toBe(GOPLUS_EMPTY_TTL)
+      const missed = await post(env, tx(approval, 56, { to: other }))
+      expect((await missed.json() as CheckBody).reasons.map((reason) => reason.code)).toContain('provider_failed')
+      expect(env.CACHE.expirations.has(`honeypot:56:${other}`)).toBe(false)
+      const again = honeypotCalls
+      await post(env, tx(approval, 56, { to: TOKEN, from: SPENDER }))
+      await post(env, tx(approval, 56, { to: other, from: USER }))
+      expect(honeypotCalls).toBe(again + 1)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('stays complete when GoPlus is rate limited and Honeypot.is answers', async () => {
+    clearGoPlusRateLimitForTests()
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        return undefined
+      },
+      (url) => {
+        if (url.includes('gopluslabs.io')) return { code: 4029, message: 'too many requests' }
+        if (url.startsWith('https://api.honeypot.is/')) {
+          return { honeypotResult: { isHoneypot: false }, simulationResult: { sellTax: 0 } }
+        }
+        return undefined
+      },
+    )
+    try {
+      const response = await post(testEnv(), tx(encode('095ea7b3', [BigInt(SPENDER), 1n]), 56))
+      const body = await response.json() as CheckBody
+      expect(body.complete).toBe(true)
+      expect(body.providers?.honeypot).toBe('answered')
+      expect(body.providers?.goplus).toBe('failed')
+      expect(body.providers?.scamSniffer).toBe('answered')
+      expect(body.reasons.some((reason) => reason.message.startsWith('GoPlus'))).toBe(true)
+      expect(body.verdict).not.toBe('safe')
+    } finally {
+      clearGoPlusRateLimitForTests()
+      calls.restore()
+    }
+  })
+
+  it('caps the verdict when GoPlus and Honeypot.is both fail', async () => {
+    clearGoPlusRateLimitForTests()
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        return undefined
+      },
+      (url) => {
+        if (url.includes('gopluslabs.io')) return { code: 4029, message: 'too many requests' }
+        if (url.startsWith('https://api.honeypot.is/')) return new Response('no', { status: 503 })
+        return undefined
+      },
+    )
+    try {
+      const response = await post(testEnv(), tx(encode('095ea7b3', [BigInt(SPENDER), 1n]), 56))
+      const body = await response.json() as CheckBody
+      expect(body.complete).toBe(false)
+      expect(body.verdict).toBe('warn')
+      expect(body.score).toBeLessThanOrEqual(85)
+      expect(body.providers?.goplus).toBe('failed')
+      expect(body.providers?.honeypot).toBe('failed')
+      const names = body.reasons.filter((reason) => reason.code === 'provider_failed').map((reason) => reason.message)
+      expect(names.some((message) => message.startsWith('GoPlus'))).toBe(true)
+      expect(names.some((message) => message.startsWith('Honeypot'))).toBe(true)
+    } finally {
+      clearGoPlusRateLimitForTests()
+      calls.restore()
+    }
+  })
+
+  it('routes a Base check to its own RPC and skips the registry warning', async () => {
+    const env = testEnv({ RPC_URL_56: 'https://bsc.example', RPC_URL_8453: 'https://rpc.test' })
+    const calls = installFetch((body) => {
+      if (body.method === 'eth_simulateV1') return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+      return undefined
+    })
+    try {
+      const response = await post(env, tx('0x', 8453))
+      const body = await response.json() as CheckBody
+      expect(calls.some((url) => url.startsWith('https://rpc.test'))).toBe(true)
+      expect(calls.some((url) => url.startsWith('https://bsc.example'))).toBe(false)
+      expect(calls.some((url) => url.includes('chain_id=8453') || url.includes('chainID=8453'))).toBe(true)
+      expect(calls.some((url) => url.includes('chain_id=56') || url.includes('chainID=56'))).toBe(false)
+      const note = body.reasons.find((reason) => reason.code === 'registry_unsupported')
+      expect(note?.severity).toBe('info')
+      expect(body.reasons.map((reason) => reason.code)).not.toContain('registry_unconfigured')
+      expect(body.providers?.registry).toBe('skipped')
+      expect(body.complete).toBe(true)
+      expect(body.verdict).toBe('safe')
+      const report = await handle(new Request(`https://custos.test/report/${TOKEN}?chainId=8453`), env)
+      const reported = await report.json() as { configured: boolean; message?: string }
+      expect(reported.configured).toBe(false)
+      expect(reported.message).toContain('BNB Chain')
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('does not call a canonical stablecoin unknown when GoPlus has no row', async () => {
+    const usdt = '0x55d398326f99059ff775485246999027b3197955'
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        return undefined
+      },
+      (url) => {
+        if (url.includes('/token_security/')) return { code: 1, result: {} }
+        return undefined
+      },
+    )
+    try {
+      const response = await post(testEnv(), tx(encode('095ea7b3', [BigInt(SPENDER), 1n]), 56, { to: usdt }))
+      const body = await response.json() as CheckBody
+      expect(body.reasons.map((reason) => reason.code)).not.toContain('unknown_token')
+      expect(body.providers?.honeypot).toBe('answered')
+    } finally {
+      calls.restore()
+    }
+  })
+
   it('does not fetch a GoPlus token on chain 97', async () => {
     const calls = installFetch()
     try {
@@ -2150,6 +2311,7 @@ interface CheckBody {
   verdict: string
   score: number
   complete: boolean
+  providers?: { goplus: string; honeypot: string; scamSniffer: string; registry: string }
   reasons: { code: string; severity: string; message: string }[]
   simulation: {
     mode: string

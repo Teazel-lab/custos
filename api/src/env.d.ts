@@ -8,6 +8,10 @@ declare global {
     TRACE_RPC_URL_56?: string
     /** debug_traceCall for chain 97. */
     TRACE_RPC_URL_97?: string
+    /** Plain JSON-RPC for Base (chain 8453). Never used for chain 56 or 97. */
+    RPC_URL_8453?: string
+    /** debug_traceCall for Base. Empty skips the trace tier. */
+    TRACE_RPC_URL_8453?: string
     /** Optional OpenAI-compatible key. Rewrites the explanation only. */
     LLM_API_KEY?: string
     /** `1` allows localhost origins. Set it in `.dev.vars` only. */

@@ -3,10 +3,10 @@ import { decodeCalldata, type DecodedCall } from './calldata'
 import { explain } from './explain'
 import { HttpError } from './http'
 import { providerReason, UNSUPPORTED_TESTNET } from './messages'
-import { REGISTRIES, registrySignal } from './registry'
-import { checkAddresses, checkTokens } from './reputation'
+import { REGISTRIES, registrySignal, type RegistryState } from './registry'
+import { checkAddresses, checkTokens, type AddressReputation, type TokenReputation } from './reputation'
 import { callModeReasons, simulate, type SimulationResult } from './simulate'
-import type { AppEnv, CheckResponse, Reason, Tx, Verdict } from './types'
+import type { AppEnv, CheckResponse, ProviderState, Providers, Reason, Tx, Verdict } from './types'
 
 const TOKEN_CAP = 5
 const ADDRESS_CAP = 8
@@ -19,11 +19,11 @@ export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promi
   const decoded = decodeCalldata(tx)
   const tokens = unique(decoded.tokens).slice(0, TOKEN_CAP)
   const addresses = unique([tx.to, ...decoded.spenders]).slice(0, ADDRESS_CAP)
-  const [sim, registryReasons, addressReasons, tokenReasons] = await Promise.all([
+  const [sim, registry, addressRep, tokenRep] = await Promise.all([
     settleSimulation(env, tx, decoded, deadline),
-    settle('Registry', () => registrySignal(env, tx.chainId, addresses, deadline)),
-    settle('Address reputation', () => checkAddresses(env, tx.chainId, addresses, deadline)),
-    settle('Token reputation', () => checkTokens(env, tx.chainId, tokens, deadline, tx.to)),
+    registrySignal(env, tx.chainId, addresses, deadline).catch(() => failedRegistry()),
+    checkAddresses(env, tx.chainId, addresses, deadline).catch(() => failedAddresses()),
+    checkTokens(env, tx.chainId, tokens, deadline, tx.to).catch(() => failedTokens(tokens)),
   ])
 
   const moreTokens = unique(sim.tokens)
@@ -33,31 +33,41 @@ export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promi
     .filter((address) => !addresses.includes(address))
     .slice(0, Math.max(0, ADDRESS_CAP - addresses.length))
   const [extraTokens, extraAddresses, extraRegistry] = await Promise.all([
-    moreTokens.length ? settle('Token reputation', () => checkTokens(env, tx.chainId, moreTokens, deadline, tx.to)) : [],
+    moreTokens.length
+      ? checkTokens(env, tx.chainId, moreTokens, deadline, tx.to).catch(() => failedTokens(moreTokens))
+      : emptyTokens(),
     moreAddresses.length
-      ? settle('Address reputation', () => checkAddresses(env, tx.chainId, moreAddresses, deadline))
-      : [],
+      ? checkAddresses(env, tx.chainId, moreAddresses, deadline).catch(() => failedAddresses())
+      : emptyAddresses(),
     moreAddresses.length && REGISTRIES[tx.chainId]
-      ? settle('Registry', () => registrySignal(env, tx.chainId, moreAddresses, deadline))
-      : [],
+      ? registrySignal(env, tx.chainId, moreAddresses, deadline).catch(() => failedRegistry())
+      : { reasons: [], state: 'skipped' as RegistryState },
   ])
 
   const reasons = dedupe([
     ...decoded.reasons,
     ...sim.reasons,
-    ...registryReasons,
-    ...addressReasons,
-    ...tokenReasons,
-    ...extraTokens,
-    ...extraAddresses,
-    ...extraRegistry,
+    ...registry.reasons,
+    ...addressRep.reasons,
+    ...tokenRep.reasons,
+    ...extraTokens.reasons,
+    ...extraAddresses.reasons,
+    ...extraRegistry.reasons,
     ...(tx.chainId === 97 ? [unsupportedTestnet()] : []),
   ])
-  const judged = applyReputationCap(judge(reasons), reasons)
+  const providers: Providers = {
+    goplus: worse(tokenRep.goplus, extraTokens.goplus, addressRep.goplus, extraAddresses.goplus),
+    honeypot: worse(tokenRep.honeypot, extraTokens.honeypot),
+    scamSniffer: worse(addressRep.scamSniffer, extraAddresses.scamSniffer),
+    registry: registryState(registry.state, extraRegistry.state),
+  }
+  const tokenGap = tokenRep.uncovered.length > 0 || extraTokens.uncovered.length > 0
+  const judged = applyReputationCap(judge(reasons), providers, tokenGap)
   return {
     verdict: judged.verdict,
     score: judged.score,
     complete: judged.complete,
+    providers,
     reasons,
     simulation: sim.simulation,
     explanation: await explain(env, judged.verdict, reasons, deadline),
@@ -65,19 +75,57 @@ export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promi
   }
 }
 
-/** GoPlus and ScamSniffer misses stay `info` in the list, but the verdict cannot be safe. */
+/**
+ * A GoPlus miss stays in the reason list, but it does not make the check
+ * incomplete when Honeypot.is covered every token and ScamSniffer answered.
+ * ScamSniffer is unchanged: its failure still caps a safe verdict at warn.
+ */
 function applyReputationCap(
   judged: { verdict: Verdict; score: number },
-  reasons: Reason[],
+  providers: Providers,
+  tokenGap: boolean,
 ): { verdict: Verdict; score: number; complete: boolean } {
-  const complete = !reasons.some((reason) => reason.code === 'provider_failed' && reputationProvider(reason.message))
+  const complete = !tokenGap && providers.scamSniffer !== 'failed'
   if (complete || judged.verdict !== 'safe') return { ...judged, complete }
   return { verdict: 'warn', score: Math.min(judged.score, 85), complete: false }
 }
 
-function reputationProvider(message: string): boolean {
-  const name = message.split(' did not answer')[0]
-  return name === 'GoPlus' || name === 'ScamSniffer' || name === 'Address reputation' || name === 'Token reputation'
+function worse(...states: ProviderState[]): ProviderState {
+  if (states.includes('failed')) return 'failed'
+  if (states.includes('answered')) return 'answered'
+  return 'skipped'
+}
+
+function registryState(first: RegistryState, extra: RegistryState): Providers['registry'] {
+  if (first === 'failed' || extra === 'failed') return 'failed'
+  if (first === 'unconfigured' || extra === 'unconfigured') return 'unconfigured'
+  if (first === 'answered' || extra === 'answered') return 'answered'
+  return 'skipped'
+}
+
+function emptyTokens(): TokenReputation {
+  return { reasons: [], uncovered: [], honeypot: 'skipped', goplus: 'skipped' }
+}
+
+function emptyAddresses(): AddressReputation {
+  return { reasons: [], scamSniffer: 'skipped', goplus: 'skipped' }
+}
+
+function failedTokens(tokens: string[]): TokenReputation {
+  return {
+    reasons: [providerReason('Token reputation')],
+    uncovered: unique(tokens),
+    honeypot: 'failed',
+    goplus: 'failed',
+  }
+}
+
+function failedAddresses(): AddressReputation {
+  return { reasons: [providerReason('Address reputation')], scamSniffer: 'failed', goplus: 'failed' }
+}
+
+function failedRegistry(): { reasons: Reason[]; state: RegistryState } {
+  return { reasons: [providerReason('Registry')], state: 'failed' }
 }
 
 function unsupportedTestnet(): Reason {
@@ -90,7 +138,9 @@ export function parseTx(body: unknown): Tx {
   for (const key of Object.keys(record)) {
     if (!ALLOWED_FIELDS.has(key)) throw new HttpError(400, `Unknown field ${key}.`)
   }
-  if (record.chainId !== 56 && record.chainId !== 97) throw new HttpError(400, 'chainId must be 56 or 97.')
+  if (record.chainId !== 56 && record.chainId !== 97 && record.chainId !== 8453) {
+    throw new HttpError(400, 'chainId must be 56, 97, or 8453.')
+  }
   const from = addressField(record.from, 'from')
   const to = addressField(record.to, 'to')
   const data = dataField(record.data)
@@ -125,14 +175,6 @@ async function settleSimulation(
       tokens: [],
       spenders: [],
     }
-  }
-}
-
-async function settle(name: string, run: () => Promise<Reason[]>): Promise<Reason[]> {
-  try {
-    return await run()
-  } catch {
-    return [providerReason(name)]
   }
 }
 

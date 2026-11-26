@@ -21,6 +21,13 @@ TRACE_RPC_URL_56=
 # debug_traceCall for chain 97. Empty skips the trace tier on testnet.
 TRACE_RPC_URL_97=
 
+# Plain JSON-RPC for Base (chain 8453). Alchemy looks like https://base-mainnet.g.alchemy.com/v2/<key>
+# Empty falls back to https://mainnet.base.org. Never used for chain 56 or 97.
+RPC_URL_8453=
+
+# debug_traceCall for Base. Empty skips the trace tier and uses eth_simulateV1 on RPC_URL_8453, then eth_call.
+TRACE_RPC_URL_8453=
+
 # Optional. Rewrites the explanation only. The verdict is computed before this call.
 LLM_API_KEY=
 

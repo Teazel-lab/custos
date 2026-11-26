@@ -1,17 +1,21 @@
 import { decodeWords, padAddress, strip0x } from './abi'
 import { cacheGet, cachePut } from './cache'
-import { providerReason } from './messages'
+import { chainProfile } from './chains'
+import { providerReason, REGISTRY_BASE } from './messages'
 import { plainRpc, rpc, rpcMatchesChain } from './rpc'
-import type { AppEnv, ChainId, Reason } from './types'
+import type { AppEnv, ChainId, ProviderState, Reason } from './types'
 
 /**
  * Chain 97 is the live testnet registry. Chain 56 stays null until mainnet is
- * deployed, and checks on chain 56 return registry_unconfigured until that slot is set.
+ * deployed. Base has no registry; checks say so at info and do not warn.
  */
 export const REGISTRIES: Record<ChainId, string | null> = {
   56: null,
   97: '0x14df99cea96c8f0980ca0af46cb5d30de782353a',
+  8453: null,
 }
+
+export type RegistryState = ProviderState | 'unconfigured'
 
 const REPORT_COUNT = '0x35ca0003'
 const REASONS_OF = '0xb3df5a4a'
@@ -45,15 +49,24 @@ export async function registrySignal(
   chainId: ChainId,
   addresses: string[],
   signal?: AbortSignal,
-): Promise<Reason[]> {
+): Promise<{ reasons: Reason[]; state: RegistryState }> {
+  if (chainProfile(chainId).registry === 'unsupported') {
+    return {
+      reasons: [{ code: 'registry_unsupported', severity: 'info', message: REGISTRY_BASE }],
+      state: 'skipped',
+    }
+  }
   if (!REGISTRIES[chainId]) {
-    return [
-      {
-        code: 'registry_unconfigured',
-        severity: 'warn',
-        message: 'Custos registry is not configured for this chain yet.',
-      },
-    ]
+    return {
+      reasons: [
+        {
+          code: 'registry_unconfigured',
+          severity: 'warn',
+          message: 'Custos registry is not configured for this chain yet.',
+        },
+      ],
+      state: 'unconfigured',
+    }
   }
   const reasons: Reason[] = []
   let failed = false
@@ -69,7 +82,7 @@ export async function registrySignal(
     }),
   )
   if (failed) reasons.push(providerReason('Registry'))
-  return reasons
+  return { reasons, state: failed ? 'failed' : 'answered' }
 }
 
 export async function reportFor(env: AppEnv, chainId: ChainId, address: string): Promise<ReportResponse> {
@@ -81,7 +94,11 @@ export async function reportFor(env: AppEnv, chainId: ChainId, address: string):
     reportCount: view.reportCount.toString(),
     reasons: named(view.reasons),
   }
-  if (!view.configured) response.message = 'Custos registry is not deployed on this chain yet.'
+  if (!view.configured) {
+    response.message = chainProfile(chainId).registry === 'unsupported'
+      ? 'The Custos registry is on BNB Chain. Base has no registry.'
+      : 'Custos registry is not deployed on this chain yet.'
+  }
   return response
 }
 

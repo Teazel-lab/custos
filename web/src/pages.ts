@@ -68,7 +68,7 @@ export function renderLanding(root: HTMLElement): () => void {
                 headline,
                 el('p', {
                   class: 'lede',
-                  text: 'Custos simulates every transaction your AI agent is about to sign on BNB Chain and flags drainers, unlimited approvals and scam addresses before any funds move.',
+                  text: 'Custos simulates every transaction your AI agent is about to sign on BNB Chain or Base and flags drainers, unlimited approvals and scam addresses before any funds move.',
                 }),
                 el('div', { class: 'hero-actions', children: [primary, secondary] }),
                 featureRow(),
@@ -88,7 +88,7 @@ export function renderLanding(root: HTMLElement): () => void {
     el('section', {
       class: 'grid-3',
       children: [
-        verdictCard('safe', 'Safe', 'Reputation checks finished and no warn or danger signal fired. If GoPlus or ScamSniffer did not answer, complete is false and the verdict is warn.'),
+        verdictCard('safe', 'Safe', 'Reputation checks finished and no warn or danger signal fired. If ScamSniffer fails, or neither GoPlus nor Honeypot.is covers a token, complete is false and the verdict is warn.'),
         verdictCard('warn', 'Warn', 'Something needs a look: an allowance, value leaving the sender, a community report, or a reputation check that did not finish.'),
         verdictCard('danger', 'Danger', 'A stronger signal, such as a honeypot, an unlimited allowance, or a flagged address.'),
       ],
@@ -124,7 +124,7 @@ export function renderLanding(root: HTMLElement): () => void {
           attrs: { id: 'docs' },
           children: [
             el('h2', { text: 'Docs' }),
-            el('p', { text: 'POST /check with chainId, from, to, data, and value. GET /health returns { "ok": true }. GET /report/<address>?chainId= returns registry counts.' }),
+            el('p', { text: 'POST /check with chainId 56, 97, or 8453, plus from, to, data, and value. GET /health returns { "ok": true }. GET /report/<address>?chainId= returns registry counts. Base has no registry.' }),
             el('pre', { text: CURL }),
             externalLink(GITHUB_URL, 'GitHub', 'button ghost'),
           ],
@@ -156,7 +156,7 @@ export function renderReport(root: HTMLElement): () => void {
 export function renderScanner(root: HTMLElement): () => void {
   const fields: ScannerFields = { chainId: 97, from: '', to: '', data: '0x', value: '0' }
   const chain = el('select') as HTMLSelectElement
-  chain.append(option('97', 'BSC Testnet (97)'), option('56', 'BNB Smart Chain (56)'))
+  chain.append(option('97', 'BSC Testnet (97)'), option('56', 'BNB Smart Chain (56)'), option('8453', 'Base (8453)'))
   const from = input({ value: fields.from, placeholder: '0x… simulated sender' })
   const to = input({ value: fields.to, placeholder: '0x… contract or recipient' })
   const value = input({ value: fields.value, placeholder: '0' })
@@ -167,7 +167,7 @@ export function renderScanner(root: HTMLElement): () => void {
   const button = el('button', { class: 'button', text: 'Check', attrs: { type: 'button' } })
 
   const sync = () => {
-    fields.chainId = chain.value === '56' ? 56 : 97
+    fields.chainId = chain.value === '56' ? 56 : chain.value === '8453' ? 8453 : 97
     fields.from = from.value
     fields.to = to.value
     fields.value = value.value
@@ -320,7 +320,7 @@ function renderWalletPage(root: HTMLElement, mode: 'activate' | 'report'): () =>
       .then((hash) => {
         txBox.replaceChildren(
           el('p', { text: 'Transaction submitted. You confirmed it in your wallet.' }),
-          externalLink(bscscanTx(chainAtSend, hash), `View ${shortAddress(hash)} on BscScan`),
+          externalLink(bscscanTx(chainAtSend, hash), `View ${shortAddress(hash)} on ${CHAINS[chainAtSend].explorerName}`),
         )
       })
       .catch((err: unknown) => {
@@ -391,7 +391,12 @@ async function loadStatus(chainId: ChainId, onError: (message: string) => void):
   const session = walletState()
   const nodes: HTMLElement[] = []
   const ready = contractsReady(chainId)
-  if (!ready) {
+  if (chainId === 8453) {
+    nodes.push(el('div', {
+      class: 'callout',
+      children: [el('p', { text: 'Agent ID and the Custos registry are on BNB Chain. A Base check does not use them, and activate and report stay on BSC.' })],
+    }))
+  } else if (!ready) {
     nodes.push(el('div', {
       class: 'callout',
       children: [el('p', { text: 'Coming soon. Mainnet hub and registry are not deployed yet, so activate and report stay off on BSC. Testnet is ready.' })],
@@ -423,13 +428,15 @@ async function loadStatus(chainId: ChainId, onError: (message: string) => void):
 
   let holder = false
   let agent: AgentRead | null = null
-  try {
-    agent = await readAgent(chainId, session.account)
-    holder = agent.holds
-  } catch (err) {
-    nodes.push(el('p', { class: 'error', text: `Could not read Agent ID. ${chainError(err)}` }))
+  if (chain.agentId) {
+    try {
+      agent = await readAgent(chainId, session.account)
+      holder = agent.holds
+    } catch (err) {
+      nodes.push(el('p', { class: 'error', text: `Could not read Agent ID. ${chainError(err)}` }))
+    }
+    if (agent) nodes.push(agentCallout(chainId, agent))
   }
-  if (agent) nodes.push(agentCallout(chainId, agent))
 
   let protectedWallet: boolean | null = null
   if (ready) {
@@ -487,7 +494,7 @@ function connectButton(
 
 function chainButtons(initial: ChainId, onPick: (chainId: ChainId) => void): HTMLElement {
   const group = el('div', { class: 'row', attrs: { role: 'group', 'aria-label': 'Network' } })
-  const buttons = ([56, 97] as const).map((chainId) => {
+  const buttons = ([56, 97, 8453] as const).map((chainId) => {
     const button = el('button', {
       class: chainId === initial ? 'button' : 'button ghost',
       text: CHAINS[chainId].short,
@@ -548,6 +555,9 @@ function checkMeta(result: CheckResponse): string {
     result.simulation.success ? 'simulation succeeded' : 'simulation failed',
   ]
   if (completeness) parts.push(completeness)
+  if (result.providers) {
+    parts.push(`honeypot ${result.providers.honeypot}`, `goplus ${result.providers.goplus}`)
+  }
   return parts.join(' · ')
 }
 

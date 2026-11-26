@@ -18,6 +18,12 @@ describe('addresses', () => {
     expect(CHAINS[97].registry).toBe(getAddress('0x14df99CEa96C8f0980cA0aF46CB5d30de782353A'))
     expect(CHAINS[97].agentIdHasHandle).toBe(false)
     expect(contractsReady(97)).toBe(true)
+
+    expect(CHAINS[8453].hub).toBeNull()
+    expect(CHAINS[8453].registry).toBeNull()
+    expect(CHAINS[8453].agentId).toBeNull()
+    expect(CHAINS[8453].native.symbol).toBe('ETH')
+    expect(contractsReady(8453)).toBe(false)
   })
 })
 
@@ -32,6 +38,7 @@ describe('check request', () => {
     })
     expect(Object.keys(body)).toEqual(['chainId', 'from', 'to', 'data', 'value'])
     expect(body.chainId).toBe(97)
+    expect(buildCheckRequest({ chainId: 8453, from: EXAMPLE_SENDER, to: EXAMPLE_SENDER, data: '0x', value: '0' }).chainId).toBe(8453)
   })
 
   it('fills a pasted token into to and shows the example sender', () => {
@@ -109,6 +116,7 @@ describe('wallet guards', () => {
     expect(call.chainId).toBe('0x61')
     expect(call.value).toBe('0x0')
     expect(transactionCall(getAddress(EXAMPLE_SENDER), getAddress(EXAMPLE_SENDER), '0x', 56).chainId).toBe('0x38')
+    expect(transactionCall(getAddress(EXAMPLE_SENDER), getAddress(EXAMPLE_SENDER), '0x', 8453).chainId).toBe('0x2105')
   })
 
   it('treats a nested 4902 as an unknown chain', () => {

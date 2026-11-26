@@ -95,5 +95,6 @@ function chainParam(url: URL): ChainId {
   const raw = url.searchParams.get('chainId')
   if (raw === null || raw === '97') return 97
   if (raw === '56') return 56
-  throw new HttpError(400, 'chainId must be 56 or 97.')
+  if (raw === '8453') return 8453
+  throw new HttpError(400, 'chainId must be 56, 97, or 8453.')
 }
