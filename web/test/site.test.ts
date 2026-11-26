@@ -176,6 +176,55 @@ function walk(dir: string): string[] {
   return files
 }
 
+describe('favicons and social image', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+  it('serves the Custos mark from the site itself', () => {
+    const html = readFileSync(join(root, 'index.html'), 'utf8')
+    expect(html).toContain('<link rel="icon" href="/favicon.svg" type="image/svg+xml" />')
+    expect(html).toContain('<link rel="icon" href="/favicon.ico" sizes="any" />')
+    expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png" />')
+    expect(html).toContain('<link rel="manifest" href="/site.webmanifest" />')
+    expect(html).toContain('<meta name="theme-color" content="#12030a" />')
+    expect(html).toContain('property="og:title"')
+    expect(html).toContain('property="og:description"')
+    expect(html).toContain('content="https://custosprotocol.com/og.png"')
+    expect(html).toContain('name="twitter:image" content="https://custosprotocol.com/og.png"')
+
+    const svg = readFileSync(join(root, 'public', 'favicon.svg'), 'utf8')
+    expect(svg).toContain('#ff4d5e')
+    expect(svg).toContain('#ff9a5a')
+    expect(svg).toContain('#1a060c')
+    expect(svg).toContain('#fff6f4')
+
+    const manifest = JSON.parse(readFileSync(join(root, 'public', 'site.webmanifest'), 'utf8')) as {
+      name: string
+      theme_color: string
+    }
+    expect(manifest.name).toBe('Custos')
+    expect(manifest.theme_color).toBe('#12030a')
+    expect(pngSize(join(root, 'public', 'apple-touch-icon.png'))).toEqual([180, 180])
+    expect(pngSize(join(root, 'public', 'icon-192.png'))).toEqual([192, 192])
+    expect(pngSize(join(root, 'public', 'icon-512.png'))).toEqual([512, 512])
+    expect(pngSize(join(root, 'public', 'og.png'))).toEqual([1200, 630])
+
+    const ico = readFileSync(join(root, 'public', 'favicon.ico'))
+    expect(ico.readUInt16LE(2)).toBe(1)
+    expect(ico.readUInt16LE(4)).toBe(3)
+    expect([ico[6], ico[22], ico[38]]).toEqual([16, 32, 48])
+
+    const csp = readFileSync(join(root, 'public', '_headers'), 'utf8')
+    expect(csp).toContain("img-src 'self'")
+    expect(csp).not.toMatch(/manifest-src[^;]*https?:/)
+  })
+})
+
+function pngSize(path: string): [number, number] {
+  const data = readFileSync(path)
+  expect(data.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
+  return [data.readUInt32BE(16), data.readUInt32BE(20)]
+}
+
 describe('wallet guards', () => {
   it('rejects the zero address before a report is built', () => {
     expect(() => validateReportTarget('0x0000000000000000000000000000000000000000')).toThrow(/zero address/)
