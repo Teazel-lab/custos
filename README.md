@@ -234,4 +234,4 @@ Set `RPC_URL_56` and `RPC_URL_97` separately. A mainnet Alchemy URL will not ans
 
 ## MCP
 
-`mcp/` is the `custosprotocol-mcp` stdio server. Tools are `custos_check` and `custos_report`. `CUSTOS_API_URL` defaults to `https://api.custosprotocol.com`. Config snippets for Claude Desktop, Claude Code, Cursor, and other MCP clients are in `mcp/README.md`. The package is not published from this tree.
+`mcp/` is the `custosprotocol-mcp` stdio server. Tools are `custos_check` and `custos_report`. `CUSTOS_API_URL` defaults to `https://api.custosprotocol.com`. Config snippets for Claude Desktop, Claude Code, Cursor, and other MCP clients are in `mcp/README.md`. The package is published on npm as `custosprotocol-mcp` (https://www.npmjs.com/package/custosprotocol-mcp).

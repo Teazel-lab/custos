@@ -19,7 +19,7 @@ A `provider_failed` reason means that provider did not answer. It does not mean 
 
 `CUSTOS_API_URL` overrides the API base. Leave it unset to use `https://api.custosprotocol.com`.
 
-This package is `custosprotocol-mcp`. It is not published from this repository snapshot. After publication, clients start it with `npx -y custosprotocol-mcp`. Until then, build it and point the client at `node`:
+This package is published on npm as `custosprotocol-mcp` (https://www.npmjs.com/package/custosprotocol-mcp). Clients start it with `npx -y custosprotocol-mcp`. To work from this repository instead:
 
 ```bash
 cd mcp
