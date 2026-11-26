@@ -958,7 +958,7 @@ describe('review regressions', () => {
       const body = await response.json() as CheckBody
       expect(body.reasons.map((reason) => reason.code)).not.toContain('unlimited_approval')
       expect(body.reasons.filter((reason) => reason.code === 'approval')).toHaveLength(1)
-      expect(methods.filter((method) => method === 'eth_getCode')).toHaveLength(8)
+      expect(methods.filter((method) => method === 'eth_getCode')).toHaveLength(9)
     } finally {
       calls.restore()
     }
@@ -1111,7 +1111,7 @@ describe('review regressions', () => {
       const body = await response.json() as CheckBody
       expect(body.reasons.map((reason) => reason.code)).toContain('unknown_token')
       expect(body.reasons.find((reason) => reason.code === 'unknown_token')?.severity).toBe('warn')
-      expect(body.complete).toBe(true)
+      expect(body.complete).toBe(false)
       expect(body.verdict).not.toBe('safe')
       const ttls = Object.fromEntries([...env.CACHE.expirations.entries()].filter(([key]) => key.startsWith('goplus:')))
       expect(Object.values(ttls).every((ttl) => ttl === GOPLUS_EMPTY_TTL)).toBe(true)
@@ -1287,7 +1287,7 @@ describe('GoPlus auth', () => {
         addressCalls += 1
         authorizations.push(headerValue(init, 'Authorization') ?? '')
         if (addressCalls === 1) return { code: 4022, message: 'invalid token' }
-        return { code: 1, result: {} }
+        return { code: 1, result: { phishing_activities: '0' } }
       }
       return undefined
     })
@@ -1397,7 +1397,7 @@ describe('GoPlus auth', () => {
     const env = testEnv({ GOPLUS_APP_KEY: APP_KEY, GOPLUS_APP_SECRET: APP_SECRET })
     const calls = installFetch(undefined, (url) => {
       if (url === GOPLUS_TOKEN_URL) return { code: 4012, message: 'signature' }
-      if (url.includes('/address_security/')) return { code: 1, result: {} }
+      if (url.includes('/address_security/')) return { code: 1, result: { phishing_activities: '0' } }
       return undefined
     })
     try {
@@ -1600,6 +1600,7 @@ describe('GoPlus auth', () => {
         const token = tokenPosts === 1 ? ACCESS_TOKEN : ROTATED_TOKEN
         return { code: 1, result: { access_token: token, expires_in: 7200 } }
       }
+      if (url.includes('/address_security/')) return { code: 1, result: { phishing_activities: '0' } }
       if (!url.includes('/token_security/')) return undefined
       const authorization = headerValue(init, 'Authorization')
       authorizations.push(authorization)
@@ -2144,6 +2145,9 @@ describe('GoPlus auth', () => {
     expect(honeypotTtl({ honeypotResult: { isHoneypot: false } })).toBe(GOPLUS_EMPTY_TTL)
     expect(honeypotTtl({ simulationSuccess: false, honeypotResult: { isHoneypot: false }, simulationResult: { sellTax: 0 } })).toBe(GOPLUS_EMPTY_TTL)
     expect(honeypotTtl({ honeypotResult: { isHoneypot: true }, simulationResult: { sellTax: 40, buyTax: 'n/a' } })).toBe(GOPLUS_EMPTY_TTL)
+    expect(honeypotTtl({ honeypotResult: { isHoneypot: false }, simulationResult: { sellTax: null } })).toBe(GOPLUS_EMPTY_TTL)
+    expect(honeypotTtl({ honeypotResult: { isHoneypot: false }, simulationResult: { sellTax: 0, buyTax: null } })).toBe(GOPLUS_EMPTY_TTL)
+    expect(honeypotTtl({ honeypotResult: { isHoneypot: false }, simulationResult: { sellTax: '0' } })).toBe(GOPLUS_ADDRESS_CLEAN_TTL)
     expect(honeypotTtl({})).toBeNull()
     const env = testEnv()
     let honeypotCalls = 0
@@ -2268,7 +2272,7 @@ describe('GoPlus auth', () => {
       },
       (url) => {
         if (url.includes('/token_security/')) return { code: 1, result: { [usdc]: {} } }
-        if (url.includes('/address_security/')) return { code: 1, result: {} }
+        if (url.includes('/address_security/')) return { code: 1, result: { phishing_activities: '0' } }
         if (url.startsWith('https://api.honeypot.is/')) return new Response('no', { status: 503 })
         return undefined
       },
@@ -2309,6 +2313,115 @@ describe('GoPlus auth', () => {
       expect(body.complete).toBe(false)
       expect(body.verdict).toBe('danger')
       expect(env.CACHE.expirations.get(`honeypot:8453:${TOKEN}`)).toBe(GOPLUS_EMPTY_TTL)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('stays incomplete when code and GoPlus address security both fail', async () => {
+    const run = async (data: string) => {
+      clearGoPlusRateLimitForTests()
+      const calls = installFetch(
+        (body) => {
+          if (body.method === 'eth_getCode') throw new Error('code down')
+          if (body.method === 'eth_simulateV1') return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+          return undefined
+        },
+        (url) => {
+          if (url.includes('/address_security/')) return { code: 4029, message: 'too many requests' }
+          return undefined
+        },
+      )
+      try {
+        const response = await post(testEnv(), tx(data, 8453))
+        const body = await response.json() as CheckBody
+        expect(body.complete).toBe(false)
+        expect(body.verdict).toBe('warn')
+        expect(body.score).toBeLessThanOrEqual(85)
+      } finally {
+        clearGoPlusRateLimitForTests()
+        calls.restore()
+      }
+    }
+    await run('0x')
+    await run('0xdeadbeef')
+  })
+
+  it('stays incomplete when an approval spender is past the address cap', async () => {
+    const spenders = Array.from({ length: 8 }, (_, index) => `0x${(index + 10).toString(16).padStart(40, '0')}`)
+    const seen: string[] = []
+    const calls = installFetch(
+      (body) => {
+        if (body.method !== 'eth_simulateV1') return undefined
+        return rpcOk([
+          {
+            calls: [
+              {
+                status: '0x1',
+                returnData: '0x',
+                logs: spenders.map((spender) => ({
+                  address: TOKEN,
+                  topics: [APPROVAL_TOPIC, word(BigInt(USER)), word(BigInt(spender))],
+                  data: word(1n),
+                })),
+              },
+            ],
+          },
+        ])
+      },
+      (url) => {
+        if (url.includes('/address_security/')) seen.push(url)
+        if (url.includes('/token_security/')) {
+          return { code: 1, result: { [TOKEN]: { is_honeypot: '0', cannot_sell_all: '0' } } }
+        }
+        if (url.includes('/address_security/')) return { code: 1, result: { phishing_activities: '0' } }
+        return undefined
+      },
+    )
+    try {
+      const response = await post(testEnv(), tx('0x', 8453))
+      const body = await response.json() as CheckBody
+      const late = spenders[spenders.length - 1]
+      expect(seen.some((url) => url.includes(late))).toBe(false)
+      expect(seen.length).toBe(8)
+      expect(body.providers?.goplus).toBe('answered')
+      expect(body.complete).toBe(false)
+    } finally {
+      calls.restore()
+    }
+  })
+
+  it('does not treat an empty GoPlus address body as a clean answer', async () => {
+    let bare = 0
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        return undefined
+      },
+      (url) => {
+        if (!url.includes('/address_security/')) return undefined
+        if (url.includes(SPENDER)) return { code: 1, result: { phishing_activities: '0' } }
+        bare += 1
+        return bare === 1 ? { code: 1, result: {} } : { code: 1 }
+      },
+    )
+    try {
+      const empty = await post(testEnv(), tx('0x', 8453))
+      const emptyBody = await empty.json() as CheckBody
+      expect(emptyBody.reasons.some((reason) => reason.message.includes('empty result'))).toBe(true)
+      expect(emptyBody.providers?.goplus).toBe('failed')
+      expect(emptyBody.complete).toBe(false)
+      expect(emptyBody.verdict).toBe('warn')
+      expect(emptyBody.score).toBeLessThanOrEqual(85)
+      const missing = await post(testEnv(), tx('0x', 8453, { to: USER }))
+      const missingBody = await missing.json() as CheckBody
+      expect(missingBody.providers?.goplus).toBe('failed')
+      expect(missingBody.complete).toBe(false)
+      const clean = await post(testEnv(), tx('0x', 8453, { to: SPENDER }))
+      const cleanBody = await clean.json() as CheckBody
+      expect(cleanBody.providers?.goplus).toBe('answered')
+      expect(cleanBody.complete).toBe(true)
+      expect(cleanBody.verdict).toBe('safe')
     } finally {
       calls.restore()
     }
@@ -2385,10 +2498,16 @@ describe('GoPlus auth', () => {
 
   it('routes a Base check to its own RPC and skips the registry warning', async () => {
     const env = testEnv({ RPC_URL_56: 'https://bsc.example', RPC_URL_8453: 'https://rpc.test' })
-    const calls = installFetch((body) => {
-      if (body.method === 'eth_simulateV1') return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
-      return undefined
-    })
+    const calls = installFetch(
+      (body) => {
+        if (body.method === 'eth_simulateV1') return rpcOk([{ calls: [{ status: '0x1', returnData: '0x', logs: [] }] }])
+        return undefined
+      },
+      (url) => {
+        if (url.includes('/address_security/')) return { code: 1, result: { phishing_activities: '0' } }
+        return undefined
+      },
+    )
     try {
       const response = await post(env, tx('0x', 8453))
       const body = await response.json() as CheckBody

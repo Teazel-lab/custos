@@ -71,7 +71,8 @@ export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promi
     simulatedTokens.length > moreTokens.length ||
     tokenRep.uncovered.length > 0 ||
     extraTokens.uncovered.length > 0
-  const addressGap = await goplusAddressGap(env, tx, decoded, sim, [addressRep, extraAddresses], deadline)
+  const checkedAddresses = new Set([...addresses, ...moreAddresses])
+  const addressGap = await goplusAddressGap(env, tx, decoded, sim, [addressRep, extraAddresses], checkedAddresses, deadline)
   const judged = applyReputationCap(judge(reasons), providers, tokenGap || addressGap)
   return {
     verdict: judged.verdict,
@@ -88,8 +89,9 @@ export async function runCheck(env: AppEnv, tx: Tx, parent?: AbortSignal): Promi
 /**
  * Token coverage is a complete GoPlus token record or a usable Honeypot.is simulation.
  * An incomplete GoPlus row does not cover the token. Dropping a token past the cap does not either.
- * GoPlus address_security must answer for an allowance spender and for a contract `to`,
- * except a plain native or ERC-20 transfer to an EOA. ScamSniffer failure still caps a safe verdict.
+ * GoPlus address_security must answer for an allowance spender and for a contract `to`.
+ * Unknown code is treated as a contract. A spender or `to` dropped by the address cap is a gap.
+ * A plain native or ERC-20 transfer to an EOA is not. ScamSniffer failure still caps a safe verdict.
  */
 function applyReputationCap(
   judged: { verdict: Verdict; score: number },
@@ -142,7 +144,8 @@ function failedAddresses(addresses: string[]): AddressReputation {
 
 /**
  * Allowance and operator recipients always need an address check.
- * So does a contract `to`, except a plain transfer whose recipient is an EOA.
+ * So does `to` unless code shows an EOA or a delegation. A failed lookup stays sensitive.
+ * A plain transfer whose recipient is an EOA does not.
  */
 async function goplusAddressGap(
   env: AppEnv,
@@ -150,10 +153,10 @@ async function goplusAddressGap(
   decoded: DecodedCall,
   sim: SimulationResult,
   reports: AddressReputation[],
+  checked: Set<string>,
   signal: AbortSignal,
 ): Promise<boolean> {
   const failed = new Set(reports.flatMap((report) => report.goplusFailed))
-  if (failed.size === 0) return false
   const sensitive = new Set<string>()
   for (const approval of [...decoded.approvals, ...sim.simulation.approvals]) {
     const spender = approval.spender.toLowerCase()
@@ -161,22 +164,23 @@ async function goplusAddressGap(
   }
   if (await contractToNeedsAddress(env, tx, signal)) sensitive.add(tx.to.toLowerCase())
   for (const address of sensitive) {
-    if (failed.has(address)) return true
+    if (!checked.has(address) || failed.has(address)) return true
   }
   return false
 }
 
 async function contractToNeedsAddress(env: AppEnv, tx: Tx, signal: AbortSignal): Promise<boolean> {
   const selector = selectorOf(tx.data)
-  if (selector.length === 0) return (await addressKind(env, tx, tx.to, signal)) === 'contract'
+  if (selector.length === 0) return !knownEoa(await addressKind(env, tx, tx.to, signal))
   if (selector === TRANSFER || selector === TRANSFER_FROM || selector === SAFE_TRANSFER || selector === SAFE_TRANSFER_DATA) {
     const recipient = addressAt(tx.data, selector === TRANSFER ? 0 : 1)
-    if (recipient) {
-      const kind = await addressKind(env, tx, recipient, signal)
-      if (kind === 'eoa' || kind === 'delegated') return false
-    }
+    if (recipient && knownEoa(await addressKind(env, tx, recipient, signal))) return false
   }
-  return (await addressKind(env, tx, tx.to, signal)) === 'contract'
+  return !knownEoa(await addressKind(env, tx, tx.to, signal))
+}
+
+function knownEoa(kind: string): boolean {
+  return kind === 'eoa' || kind === 'delegated'
 }
 
 async function addressKind(env: AppEnv, tx: Tx, address: string, signal: AbortSignal) {

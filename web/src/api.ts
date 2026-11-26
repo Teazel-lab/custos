@@ -21,7 +21,7 @@ export interface Reason {
 export interface CheckResponse {
   verdict: 'safe' | 'warn' | 'danger' | string
   score: number
-  /** Present on the updated API. False means no token provider and ScamSniffer both missed. */
+  /** False when token coverage, ScamSniffer, or a required GoPlus address check missed. */
   complete?: boolean
   providers?: {
     goplus: string

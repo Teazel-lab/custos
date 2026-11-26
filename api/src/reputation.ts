@@ -193,22 +193,29 @@ async function readHoneypot(
 export function honeypotTtl(body: HoneypotBody): number | null {
   if (!honeypotKnown(body.honeypotResult?.isHoneypot)) return null
   if (!honeypotCovers(body)) return GOPLUS_EMPTY_TTL
-  const tax = Number(body.simulationResult?.sellTax)
+  const tax = finiteTax(body.simulationResult?.sellTax) ?? 0
   if (body.honeypotResult?.isHoneypot === true || body.honeypotResult?.isHoneypot === 'true' || tax > 20 || cannotSell(body)) {
     return GOPLUS_RECORD_TTL
   }
   return GOPLUS_ADDRESS_CLEAN_TTL
 }
 
-/** Coverage needs a simulation that ran and finite taxes. Flags can still be raised without it. */
+/** Coverage needs a simulation that ran and finite taxes. `null` is not zero. Flags can still be raised without it. */
 function honeypotCovers(body: HoneypotBody): boolean {
   if (!honeypotKnown(body.honeypotResult?.isHoneypot)) return false
   if (body.simulationSuccess === false) return false
-  const sell = Number(body.simulationResult?.sellTax)
-  if (!Number.isFinite(sell)) return false
+  if (finiteTax(body.simulationResult?.sellTax) === null) return false
   const buy = body.simulationResult?.buyTax
-  if (buy !== undefined && !Number.isFinite(Number(buy))) return false
+  if (buy !== undefined && finiteTax(buy) === null) return false
   return true
+}
+
+/** A JSON number, or a non-empty numeric string. `null` and `""` are not taxes. */
+function finiteTax(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value !== 'string' || value.trim() === '') return null
+  const tax = Number(value)
+  return Number.isFinite(tax) ? tax : null
 }
 
 function honeypotKnown(flag: boolean | string | undefined): boolean {
@@ -283,7 +290,10 @@ async function goplusAddressReasons(
     addresses.map(async (address) => {
       try {
         const record = await goplusAddress(env, chainId, address, signal)
-        if (ADDRESS_FLAGS.some((flag) => record[flag] === '1')) {
+        if (!addressRecordAnswered(record)) {
+          failed.push(address)
+          detail ??= 'empty result'
+        } else if (ADDRESS_FLAGS.some((flag) => record[flag] === '1')) {
           reasons.push({
             code: 'address_malicious',
             severity: 'danger',
@@ -474,6 +484,11 @@ function recordObject(value: unknown): Record<string, string> {
   return value as Record<string, string>
 }
 
+/** A code-1 body with none of the address flags is not a clean answer. */
+function addressRecordAnswered(record: Record<string, string>): boolean {
+  return ADDRESS_FLAGS.some((flag) => Object.prototype.hasOwnProperty.call(record, flag))
+}
+
 function goplusAddressTtl(record: Record<string, string>): number {
   if (ADDRESS_FLAGS.some((flag) => record[flag] === '1')) return GOPLUS_RECORD_TTL
   if (Object.keys(record).length === 0) return GOPLUS_EMPTY_TTL
@@ -511,8 +526,8 @@ interface HoneypotBody {
   honeypotResult?: { isHoneypot?: boolean | string }
   simulationSuccess?: boolean
   simulationResult?: {
-    sellTax?: number | string
-    buyTax?: number | string
+    sellTax?: number | string | null
+    buyTax?: number | string | null
     maxSell?: { token?: number; tokenWei?: string }
   }
 }
