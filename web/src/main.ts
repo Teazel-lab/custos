@@ -84,7 +84,7 @@ function boot(): void {
   outlet.tabIndex = -1
   const footer = el('footer', {
     children: [
-      el('p', { text: 'Built for the Binance Agent ID Hackathon. Custos never asks for a private key or a seed phrase, and it never sends a transaction unless you press the button and confirm it in your wallet.' }),
+      el('p', { text: 'Custos never asks for a private key or a seed phrase, and it never sends a transaction unless you press the button and confirm it in your wallet.' }),
     ],
   })
   app.append(nav, outlet, footer)

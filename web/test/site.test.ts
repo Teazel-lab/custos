@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 import { applyAddressPaste, buildCheckRequest, EXAMPLE_SENDER, parseCheckResponse, parseReportResponse, reportUrl, severityClass } from '../src/api'
@@ -104,6 +107,38 @@ describe('response shape', () => {
     expect(severityClass('"><img>')).toBe('neutral')
   })
 })
+
+describe('site copy and chain marks', () => {
+  it('does not attribute the site to a hackathon', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+    const files = walk(join(root, 'src')).concat(join(root, 'index.html'))
+    const hits = files.flatMap((file) => {
+      const text = readFileSync(file, 'utf8')
+      return text.toLowerCase().includes('hackathon') ? [file] : []
+    })
+    expect(hits).toEqual([])
+  })
+
+  it('keeps the official BNB yellow and Base blue marks unchanged', () => {
+    const root = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'assets')
+    const bnb = readFileSync(join(root, 'bnb-chain.svg'), 'utf8')
+    const base = readFileSync(join(root, 'base-square.svg'), 'utf8')
+    expect(bnb).toContain('fill="#F0B90B"')
+    expect(base).toContain('fill: blue')
+    expect(base).not.toContain('#ff4d5e')
+    expect(bnb).not.toContain('#ff4d5e')
+  })
+})
+
+function walk(dir: string): string[] {
+  const files: string[] = []
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name)
+    if (statSync(path).isDirectory()) files.push(...walk(path))
+    else if (/\.(ts|css|html|svg)$/.test(name)) files.push(path)
+  }
+  return files
+}
 
 describe('wallet guards', () => {
   it('rejects the zero address before a report is built', () => {

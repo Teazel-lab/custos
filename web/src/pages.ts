@@ -23,6 +23,8 @@ import {
 } from './config'
 import { el, externalLink, field, input, shortAddress } from './dom'
 import { routeLink } from './router'
+import baseMark from './assets/base-square.svg'
+import bnbMark from './assets/bnb-chain.svg'
 import owlJpg from './assets/owl-hero.jpg'
 import owlWebp from './assets/owl-hero.webp'
 import {
@@ -72,6 +74,7 @@ export function renderLanding(root: HTMLElement): () => void {
                 }),
                 el('div', { class: 'hero-actions', children: [primary, secondary] }),
                 featureRow(),
+                networksStrip(),
               ],
             }),
           ],
@@ -155,8 +158,10 @@ export function renderReport(root: HTMLElement): () => void {
 
 export function renderScanner(root: HTMLElement): () => void {
   const fields: ScannerFields = { chainId: 97, from: '', to: '', data: '0x', value: '0' }
-  const chain = el('select') as HTMLSelectElement
-  chain.append(option('97', 'BSC Testnet (97)'), option('56', 'BNB Smart Chain (56)'), option('8453', 'Base (8453)'))
+  let selectedChain: ChainId = 97
+  const chain = chainPicker(selectedChain, (next) => {
+    selectedChain = next
+  })
   const from = input({ value: fields.from, placeholder: '0x… simulated sender' })
   const to = input({ value: fields.to, placeholder: '0x… contract or recipient' })
   const value = input({ value: fields.value, placeholder: '0' })
@@ -167,7 +172,7 @@ export function renderScanner(root: HTMLElement): () => void {
   const button = el('button', { class: 'button', text: 'Check', attrs: { type: 'button' } })
 
   const sync = () => {
-    fields.chainId = chain.value === '56' ? 56 : chain.value === '8453' ? 8453 : 97
+    fields.chainId = selectedChain
     fields.from = from.value
     fields.to = to.value
     fields.value = value.value
@@ -224,7 +229,10 @@ export function renderScanner(root: HTMLElement): () => void {
       class: 'panel form',
       attrs: { action: '#' },
       children: [
-        field('Chain', chain),
+        el('div', {
+          class: 'field',
+          children: [el('span', { text: 'Chain' }), chain],
+        }),
         field('From', from, 'Simulated sender. Custos does not sign as this address.'),
         field('To', to),
         field('Value', value, 'Decimal wei, or hex.'),
@@ -496,13 +504,13 @@ function chainButtons(initial: ChainId, onPick: (chainId: ChainId) => void): HTM
   const group = el('div', { class: 'row', attrs: { role: 'group', 'aria-label': 'Network' } })
   const buttons = ([56, 97, 8453] as const).map((chainId) => {
     const button = el('button', {
-      class: chainId === initial ? 'button' : 'button ghost',
-      text: CHAINS[chainId].short,
+      class: chainId === initial ? 'button chain-choice' : 'button ghost chain-choice',
       attrs: { type: 'button' },
+      children: [chainLogo(chainId), el('span', { text: CHAINS[chainId].short })],
     })
     button.addEventListener('click', () => {
-      for (const other of buttons) other.className = 'button ghost'
-      button.className = 'button'
+      for (const other of buttons) other.className = 'button ghost chain-choice'
+      button.className = 'button chain-choice'
       onPick(chainId)
     })
     return button
@@ -515,19 +523,20 @@ async function runScan(fields: ScannerFields): Promise<HTMLElement[]> {
   const body = buildCheckRequest(fields)
   const [checked, reported] = await Promise.allSettled([postCheck(body), fetchReport(body.to, body.chainId)])
   const nodes: HTMLElement[] = []
-  if (checked.status === 'fulfilled') nodes.push(renderCheck(checked.value))
+  if (checked.status === 'fulfilled') nodes.push(renderCheck(checked.value, body.chainId))
   else nodes.push(el('p', { class: 'error', text: checked.reason instanceof Error ? checked.reason.message : 'Check failed.' }))
   if (reported.status === 'fulfilled') nodes.push(renderRegistry(reported.value))
   else nodes.push(el('p', { class: 'error', text: reported.reason instanceof Error ? reported.reason.message : 'Registry lookup failed.' }))
   return nodes
 }
 
-function renderCheck(result: CheckResponse): HTMLElement {
+function renderCheck(result: CheckResponse, chainId: ChainId): HTMLElement {
   const tone = result.verdict === 'safe' || result.verdict === 'warn' || result.verdict === 'danger' ? result.verdict : 'neutral'
   return el('article', {
     class: `panel verdict verdict-${tone}`,
     children: [
       el('p', { class: 'eyebrow', text: 'Verdict' }),
+      chainName(chainId),
       el('h2', { text: result.verdict }),
       el('p', { class: 'meta', text: checkMeta(result) }),
       el('p', { text: result.explanation }),
@@ -574,6 +583,7 @@ function renderRegistry(report: ReportResponse): HTMLElement {
     class: 'panel',
     children: [
       el('h2', { text: 'Registry' }),
+      chainName(report.chainId),
       el('p', { text: report.configured ? `${report.reportCount} active report(s) on ${report.address}.` : (report.message ?? 'Registry is not configured on this chain.') }),
       el('ul', { class: 'reasons', children: lines.map(([name, count]) => el('li', { text: `${name}: ${count}` })) }),
     ],
@@ -642,12 +652,71 @@ function arrowIcon(): SVGSVGElement {
   return icon([['path', { d: 'M5 12h14M13 6l6 6-6 6' }]])
 }
 
+const CHAIN_LABELS: Record<ChainId, string> = {
+  97: 'BSC Testnet (97)',
+  56: 'BNB Smart Chain (56)',
+  8453: 'Base (8453)',
+}
+
+function chainPicker(initial: ChainId, onPick: (chainId: ChainId) => void): HTMLElement {
+  const group = el('div', { class: 'chain-picker', attrs: { role: 'radiogroup', 'aria-label': 'Chain' } })
+  const buttons = ([97, 56, 8453] as const).map((chainId) => {
+    const selected = chainId === initial
+    const button = el('button', {
+      class: selected ? 'chain-option is-selected' : 'chain-option',
+      attrs: { type: 'button', role: 'radio', 'aria-checked': selected ? 'true' : 'false' },
+      children: [chainLogo(chainId), el('span', { text: CHAIN_LABELS[chainId] })],
+    })
+    button.addEventListener('click', () => {
+      for (const other of buttons) {
+        const on = other === button
+        other.classList.toggle('is-selected', on)
+        other.setAttribute('aria-checked', on ? 'true' : 'false')
+      }
+      onPick(chainId)
+    })
+    return button
+  })
+  group.append(...buttons)
+  return group
+}
+
+function networksStrip(): HTMLElement {
+  return el('div', {
+    class: 'networks',
+    children: [
+      el('span', { class: 'networks-label', text: 'Works on' }),
+      chainName(56, 'BNB Chain'),
+      chainName(8453, 'Base'),
+    ],
+  })
+}
+
+function chainName(chainId: ChainId, label = CHAINS[chainId].name): HTMLElement {
+  return el('span', { class: 'chain-label', children: [chainLogo(chainId), el('span', { text: label })] })
+}
+
+/** Official mark beside a text label, so the image is not announced twice. */
+function chainLogo(chainId: ChainId): HTMLImageElement {
+  const bnb = chainId !== 8453
+  const image = el('img', {
+    class: 'chain-logo',
+    attrs: {
+      src: bnb ? bnbMark : baseMark,
+      alt: '',
+      width: bnb ? '96' : '1280',
+      height: bnb ? '96' : '1280',
+      'aria-hidden': 'true',
+    },
+  })
+  return image
+}
+
 function featureRow(): HTMLElement {
   const items: Array<[string, string, Array<[string, Record<string, string>]>]> = [
     ['Tx Simulation', 'Trace before sign', [['path', { d: 'M4 12h3l2.2-5 4.2 10L16 12h4' }]]],
     ['Agent ID', 'Binance .ai holders', [['circle', { cx: '12', cy: '8', r: '3' }], ['path', { d: 'M6.5 19c1.2-2.6 3-3.8 5.5-3.8s4.3 1.2 5.5 3.8' }]]],
     ['Scam Registry', 'On-chain reports', [['path', { d: 'M12 3.5l6.5 2.5v5.2c0 4.2-2.7 7-6.5 8.8-3.8-1.8-6.5-4.6-6.5-8.8V6z' }]]],
-    ['Free', 'During hackathon', [['path', { d: 'M12 4v16M8 8h5.2a2.8 2.8 0 0 1 0 5.6H8.6' }]]],
   ]
   return el('ul', {
     class: 'feature-row',
