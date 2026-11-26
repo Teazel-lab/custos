@@ -12,7 +12,7 @@ Pages:
 
 Wallet access is the browser extension already installed (MetaMask, Binance Wallet, or any other EIP-6963 / `window.ethereum` provider). There is no QR-code login and no seed phrase field. A transaction is sent only after the matching button click, and the wallet still has to confirm it.
 
-Addresses live in `src/config.ts`. Testnet hub, registry, and MockAgentID are filled in. Mainnet hub and registry are `null`, and those actions show “coming soon” until the two fields are set.
+Addresses live in `src/config.ts`. Chain 56 and chain 97 hub and registry are filled in. Base stays empty. Activate and report send a transaction only after the button click, and the wallet still confirms it.
 
 ## Run
 
@@ -50,6 +50,6 @@ Pages serves the SPA fallback when the project has no `404.html`. Workers uses `
 
 Point `custosprotocol.com` and `www.custosprotocol.com` at that deployment. The API already allows both origins.
 
-## Mainnet still open
+## Mainnet
 
-`CHAINS[56].hub` and `CHAINS[56].registry` are empty on purpose. BSC activation and reports stay disabled until those addresses exist. Agent ID reads on mainnet already use `0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F` (`balanceOf`, `handleOf`).
+`CHAINS[56].hub` is `0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945` and `CHAINS[56].registry` is `0x062D0452187094C1B2dd546B6a793A50eBDBfd06`. Agent ID reads use `0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F` (`balanceOf`, `handleOf`). Those hub and registry addresses also appear on testnet, in different roles, because the deployer nonce matches.

@@ -14,7 +14,7 @@ export interface ChainConfig {
   agentId: Address | null
   /** False on the testnet mock, which only implements balanceOf. */
   agentIdHasHandle: boolean
-  /** Empty until that contract is deployed. A later fill-in is this one field. */
+  /** Null on Base, which has no Custos contracts. */
   hub: Address | null
   registry: Address | null
 }
@@ -30,8 +30,8 @@ export const CHAINS: Record<ChainId, ChainConfig> = {
     native: { name: 'BNB', symbol: 'BNB' },
     agentId: getAddress('0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F'),
     agentIdHasHandle: true,
-    hub: null,
-    registry: null,
+    hub: getAddress('0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945'),
+    registry: getAddress('0x062D0452187094C1B2dd546B6a793A50eBDBfd06'),
   },
   97: {
     id: 97,

@@ -6,11 +6,11 @@ import { plainRpc, rpc, rpcMatchesChain } from './rpc'
 import type { AppEnv, ChainId, ProviderState, Reason } from './types'
 
 /**
- * Chain 97 is the live testnet registry. Chain 56 stays null until mainnet is
- * deployed. Base has no registry; checks say so at info and do not warn.
+ * Chain 56 and chain 97 registries are live. The addresses match the deployer
+ * nonce, so chain 56's registry is chain 97's hub. Base has no registry.
  */
 export const REGISTRIES: Record<ChainId, string | null> = {
-  56: null,
+  56: '0x062d0452187094c1b2dd546b6a793a50ebdbfd06',
   97: '0x14df99cea96c8f0980ca0af46cb5d30de782353a',
   8453: null,
 }

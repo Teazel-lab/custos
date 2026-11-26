@@ -146,7 +146,7 @@ export function renderLanding(root: HTMLElement): () => void {
       class: 'panel',
       children: [
         el('h2', { text: 'Contracts' }),
-        el('p', { text: 'Testnet (chain 97) is live. Mainnet hub and registry are not deployed yet. Filling those two addresses later is a one-line change in web/src/config.ts.' }),
+        el('p', { text: 'BNB Chain and BSC testnet are live. Base has no Custos contracts. The same deployer nonce put the mainnet hub at the testnet mock address and the mainnet registry at the testnet hub address.' }),
         contracts,
       ],
     }),
@@ -489,7 +489,7 @@ async function loadStatus(chainId: ChainId, onError: (message: string) => void):
   } else if (!ready) {
     nodes.push(el('div', {
       class: 'callout',
-      children: [el('p', { text: 'Coming soon. Mainnet hub and registry are not deployed yet, so activate and report stay off on BSC. Testnet is ready.' })],
+      children: [el('p', { text: 'Hub and registry are not set on this chain, so activate and report stay off.' })],
     }))
   }
   if (!session.account || !session.provider) {

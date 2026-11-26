@@ -595,12 +595,13 @@ describe('POST /check', () => {
     }
   })
 
-  it('warns when the registry is not configured', async () => {
+  it('reads the mainnet registry instead of warning that it is missing', async () => {
+    const registries: string[] = []
     const calls = installFetch((body) => {
       if (body.method === 'eth_call') {
-        const params = body.params[0] as { data?: string }
+        const params = body.params[0] as { data?: string; to?: string }
         if (params.data?.startsWith('0x35ca0003') || params.data?.startsWith('0xb3df5a4a')) {
-          throw new Error('registry called')
+          registries.push((params.to ?? '').toLowerCase())
         }
       }
       return undefined
@@ -608,8 +609,9 @@ describe('POST /check', () => {
     try {
       const response = await post(testEnv(), tx('0x', 56))
       const body = await response.json() as CheckBody
-      expect(body.verdict).toBe('warn')
-      expect(body.reasons.map((reason) => reason.code)).toContain('registry_unconfigured')
+      expect(registries).toContain('0x062d0452187094c1b2dd546b6a793a50ebdbfd06')
+      expect(body.reasons.map((reason) => reason.code)).not.toContain('registry_unconfigured')
+      expect(body.providers?.registry).toBe('answered')
     } finally {
       calls.restore()
     }

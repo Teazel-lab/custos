@@ -10,12 +10,12 @@ import { CHECK_CURL, CHECK_FETCH, MCP_CURSOR, VERDICT_RULES } from '../src/snipp
 import { shouldAddChain, transactionCall } from '../src/wallet'
 
 describe('addresses', () => {
-  it('leaves mainnet hub and registry empty and keeps testnet filled', () => {
-    expect(CHAINS[56].hub).toBeNull()
-    expect(CHAINS[56].registry).toBeNull()
+  it('fills mainnet hub and registry and keeps testnet in its own roles', () => {
+    expect(CHAINS[56].hub).toBe(getAddress('0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945'))
+    expect(CHAINS[56].registry).toBe(getAddress('0x062D0452187094C1B2dd546B6a793A50eBDBfd06'))
     expect(CHAINS[56].agentId).toBe(getAddress('0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F'))
     expect(CHAINS[56].agentIdHasHandle).toBe(true)
-    expect(contractsReady(56)).toBe(false)
+    expect(contractsReady(56)).toBe(true)
 
     expect(CHAINS[97].agentId).toBe(getAddress('0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945'))
     expect(CHAINS[97].hub).toBe(getAddress('0x062D0452187094C1B2dd546B6a793A50eBDBfd06'))

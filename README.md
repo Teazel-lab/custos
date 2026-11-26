@@ -153,11 +153,34 @@ forge verify-contract --chain bsc-testnet --watch \
   "$MOCK" script/mocks/MockAgentID.sol:MockAgentID
 ```
 
+## Deployments
+
+The deployer used the same nonce on both chains. Chain 56 did not deploy MockAgentID, so its first contract is CustosHub and its second is CustosRegistry. On chain 97 those nonces are MockAgentID and CustosHub. Sourcify reports an exact match for the chain 56 contracts.
+
+### BNB Smart Chain (56)
+
+Deployed in block [135923292](https://bscscan.com/block/135923292). Agent ID is the soulbound registry `0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F` ([BscScan](https://bscscan.com/address/0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F)).
+
+| Contract | Address | BscScan | Sourcify |
+| --- | --- | --- | --- |
+| CustosHub | `0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945` | [address](https://bscscan.com/address/0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945) · [tx](https://bscscan.com/tx/0x62f4ba541be96d9dd1a3e7e556e8e890e837246e1d9106fec089838b7db5d9cb) | [exact match](https://sourcify.dev/#/lookup/0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945) |
+| CustosRegistry | `0x062D0452187094C1B2dd546B6a793A50eBDBfd06` | [address](https://bscscan.com/address/0x062D0452187094C1B2dd546B6a793A50eBDBfd06) · [tx](https://bscscan.com/tx/0x714500952156176364eea8314820231b69d2fb609699547da9e3b109c8fbe30e) | [exact match](https://sourcify.dev/#/lookup/0x062D0452187094C1B2dd546B6a793A50eBDBfd06) |
+
+### BSC Testnet (97)
+
+| Contract | Address | BscScan | Sourcify |
+| --- | --- | --- | --- |
+| MockAgentID | `0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945` | [address](https://testnet.bscscan.com/address/0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945) | [lookup](https://sourcify.dev/#/lookup/0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945) |
+| CustosHub | `0x062D0452187094C1B2dd546B6a793A50eBDBfd06` | [address](https://testnet.bscscan.com/address/0x062D0452187094C1B2dd546B6a793A50eBDBfd06) | [lookup](https://sourcify.dev/#/lookup/0x062D0452187094C1B2dd546B6a793A50eBDBfd06) |
+| CustosRegistry | `0x14df99CEa96C8f0980cA0aF46CB5d30de782353A` | [address](https://testnet.bscscan.com/address/0x14df99CEa96C8f0980cA0aF46CB5d30de782353A) | [lookup](https://sourcify.dev/#/lookup/0x14df99CEa96C8f0980cA0aF46CB5d30de782353A) |
+
+MockAgentID is test-only. It is not Agent ID, and it is not the chain 56 hub even though the address matches.
+
 ## Check API
 
 `api/` is a Cloudflare Worker. `POST /check` inspects a transaction an agent is about to sign and returns a verdict. It never accepts a key or seed, never signs, and never broadcasts. The caller still confirms the transaction in their own wallet.
 
-The live chain 97 contracts are CustosHub `0x062D0452187094C1B2dd546B6a793A50eBDBfd06`, CustosRegistry `0x14df99CEa96C8f0980cA0aF46CB5d30de782353A`, and MockAgentID `0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945`. Chain 56 checks return a `registry_unconfigured` warning until the mainnet registry address is set. The chain 56 slot in the worker stays empty on purpose. Base (chain 8453) has no Agent ID registry and no Custos contracts. A Base check adds an info note, `registry_unsupported`, and is not warned or capped because of that.
+Chain 56 and chain 97 both read a live Custos registry. Chain 56 uses CustosRegistry `0x062D0452187094C1B2dd546B6a793A50eBDBfd06`. Chain 97 uses CustosRegistry `0x14df99CEa96C8f0980cA0aF46CB5d30de782353A`, CustosHub `0x062D0452187094C1B2dd546B6a793A50eBDBfd06`, and MockAgentID `0xBC7e6AF6F97f2A9A56a1784D3E17d31361ed8945`. The addresses overlap across chains because the deployer nonce matches; the roles do not. See Deployments. Base (chain 8453) has no Agent ID registry and no Custos contracts. A Base check adds an info note, `registry_unsupported`, and is not warned or capped because of that.
 
 `POST /check` takes `{ "chainId": 56, 97, or 8453, "from", "to", "data", "value" }`. `value` is a decimal string, a hex string, or a safe integer. Unknown JSON fields are rejected. The response is `{ verdict, score, complete, providers, reasons, simulation, explanation, checkedAt }`. `providers` says whether GoPlus, Honeypot.is, ScamSniffer, and the registry answered. `complete` is false when ScamSniffer failed, when no token-reputation provider returned a usable record for a token in the transaction, or when GoPlus address security missed an allowance spender or a contract `to` (unknown code counts, and so does an address dropped by the cap). A plain transfer to an EOA does not. A GoPlus token miss alone does not do that when Honeypot.is answered. `verdict` is `safe`, `warn`, or `danger`. `simulation.mode` is `trace` when `debug_traceCall` succeeded, `simulate` when `eth_simulateV1` succeeded, and `call` when the check used `eth_call` plus `eth_estimateGas`. Trace is the primary path on mainnet: Alchemy Pay As You Go answers `debug_traceCall` with `callTracer` and `withLog` on bnb-mainnet. The check then tries `eth_simulateV1` (`traceTransfers: true`, `validation: false`) on that chain's plain RPC, then `eth_call`. Each chain has its own URL. A chain 97 check never calls the chain 56 endpoint, and a Base check never calls either BSC URL. Base uses `RPC_URL_8453`, then `TRACE_RPC_URL_8453` for the trace tier. GoPlus and Honeypot.is are called with chain id 8453. ScamSniffer's list is not chain-specific, so Base uses the same address list. Native transfers are labeled `BNB` on chain 56, `tBNB` on chain 97, and `ETH` on Base. Canonical USDT and USDC addresses are per chain and are not reported as unknown tokens. Call mode adds `trace_unavailable`, and also warns when the selector is not a known decode or when `value` is greater than zero. It is not a clean `safe` result.
 
