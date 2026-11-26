@@ -21,13 +21,26 @@ export const UNSUPPORTED_TESTNET =
 export const REGISTRY_BASE =
   'The Custos registry and Agent ID are on BNB Chain. This Base check does not use them.'
 
+/** Added to the explanation only when the check's `complete` field is false. */
+export const INCOMPLETE_NOTE = 'This check is incomplete.'
+
+/**
+ * Names the provider that missed. It does not say the check is incomplete:
+ * another provider may already have covered the transaction, and only
+ * `complete: false` means the check is incomplete.
+ */
 export function providerReason(name: string, detail?: string): Reason {
-  const cause = detail ? ` (${detail})` : ''
+  const cause = detail ? ` (${publicCause(name, detail)})` : ''
   return {
     code: 'provider_failed',
     severity: 'info',
-    message: `${name} did not answer${cause}. Treat this check as incomplete.`,
+    message: `${name} did not answer${cause}; other providers were used where possible.`,
   }
+}
+
+function publicCause(name: string, detail: string): string {
+  const prefix = `${name} `
+  return detail.startsWith(prefix) ? detail.slice(prefix.length) : detail
 }
 
 export function approvalToEoa(spender: string): Reason {

@@ -23,6 +23,17 @@ import {
 } from './config'
 import { el, externalLink, field, input, shortAddress } from './dom'
 import { routeLink } from './router'
+import {
+  CHECK_CARD,
+  CHECK_CURL,
+  CHECK_FETCH,
+  MCP_CLAUDE_CODE,
+  MCP_CLAUDE_DESKTOP,
+  MCP_CURSOR,
+  MCP_GENERIC,
+  SKILL_INSTALL,
+  VERDICT_RULES,
+} from './snippets'
 import baseMark from './assets/base-square.svg'
 import bnbMark from './assets/bnb-chain.svg'
 import owlJpg from './assets/owl-hero.jpg'
@@ -38,10 +49,6 @@ import {
   walletState,
   type Eip1193Provider,
 } from './wallet'
-
-const CURL = `curl -s -X POST https://api.custosprotocol.com/check \\
-  -H 'content-type: application/json' \\
-  -d '{"chainId":97,"from":"0x0000000000000000000000000000000000000001","to":"0x0000000000000000000000000000000000000002","data":"0x","value":"0"}'`
 
 export function renderLanding(root: HTMLElement): () => void {
   const contracts = contractList()
@@ -111,6 +118,7 @@ export function renderLanding(root: HTMLElement): () => void {
         }),
       ],
     }),
+    useCases(),
     el('section', {
       class: 'split',
       children: [
@@ -127,9 +135,9 @@ export function renderLanding(root: HTMLElement): () => void {
           attrs: { id: 'docs' },
           children: [
             el('h2', { text: 'Docs' }),
-            el('p', { text: 'POST /check with chainId 56, 97, or 8453, plus from, to, data, and value. GET /health returns { "ok": true }. GET /report/<address>?chainId= returns registry counts. Base has no registry.' }),
-            el('pre', { text: CURL }),
-            externalLink(GITHUB_URL, 'GitHub', 'button ghost'),
+            el('p', { text: 'POST /check with chainId 56, 97, or 8453, plus from, to, data, and value. GET /health returns { "ok": true }. GET /report/<address>?chainId= returns registry counts. Base has no registry. The docs page has the skill, the MCP config, and the verdict rules.' }),
+            el('pre', { text: CHECK_CURL }),
+            el('div', { class: 'row', children: [routeLink('/docs', 'Open the docs', 'button ghost'), externalLink(GITHUB_URL, 'GitHub', 'button ghost')] }),
           ],
         }),
       ],
@@ -142,6 +150,80 @@ export function renderLanding(root: HTMLElement): () => void {
         contracts,
       ],
     }),
+      ],
+    }),
+  )
+  return () => {}
+}
+
+export function renderDocs(root: HTMLElement): () => void {
+  root.append(
+    el('header', {
+      class: 'page-head',
+      children: [
+        el('p', { class: 'eyebrow-line', children: [el('span', { text: 'Copy and use' })] }),
+        el('h1', { text: 'Docs' }),
+        el('p', {
+          text: 'Add the skill, connect the MCP server, or call the API yourself. Every path reviews the transaction before a signature. Custos never asks for a key and never signs.',
+        }),
+        networksStrip(),
+      ],
+    }),
+    el('section', {
+      class: 'panel',
+      attrs: { id: 'verdicts' },
+      children: [
+        el('h2', { text: 'Verdicts' }),
+        el('p', { text: 'The API returns verdict safe, warn, or danger, plus complete, reasons, and providers. Map that onto one action. Danger blocks even when complete is false. complete false is warn when the verdict is not danger. A provider_failed reason only means that provider did not answer. The explanation says the check is incomplete only when complete is false.' }),
+        el('div', {
+          class: 'grid-3',
+          children: VERDICT_RULES.map((rule) => el('article', {
+            class: `panel verdict verdict-${rule.id === 'block' ? 'danger' : rule.id === 'warn' ? 'warn' : 'safe'}`,
+            children: [el('h3', { text: rule.title }), el('p', { text: rule.text })],
+          })),
+        }),
+      ],
+    }),
+    el('section', {
+      class: 'panel',
+      attrs: { id: 'skill' },
+      children: [
+        el('h2', { text: 'Skill' }),
+        el('p', { text: 'The skill tells an agent to POST the transaction to /check before it signs on chain 56, 97, or 8453, then obey block, warn, or allow.' }),
+        el('pre', { text: SKILL_INSTALL }),
+        externalLink(`${GITHUB_URL}/tree/main/skill/custos`, 'skill/custos on GitHub', 'button ghost'),
+      ],
+    }),
+    el('section', {
+      class: 'panel',
+      attrs: { id: 'mcp' },
+      children: [
+        el('h2', { text: 'MCP server' }),
+        el('p', { text: 'custos-mcp is a stdio server. Tools are custos_check and custos_report. The default API is the production check endpoint. Set CUSTOS_API_URL only when you want a different base. npx custos-mcp starts it. Do not send a key or a seed.' }),
+        el('h3', { text: 'Claude Desktop' }),
+        el('p', { class: 'muted', text: 'claude_desktop_config.json. macOS: ~/Library/Application Support/Claude/. Linux: ~/.config/Claude/.' }),
+        el('pre', { text: MCP_CLAUDE_DESKTOP }),
+        el('h3', { text: 'Claude Code' }),
+        el('p', { class: 'muted', text: '.mcp.json in the project, or the user MCP config.' }),
+        el('pre', { text: MCP_CLAUDE_CODE }),
+        el('h3', { text: 'Cursor' }),
+        el('p', { class: 'muted', text: '.cursor/mcp.json, or Cursor Settings, MCP.' }),
+        el('pre', { text: MCP_CURSOR }),
+        el('h3', { text: 'Any MCP client' }),
+        el('p', { class: 'muted', text: 'Launch the stdio command npx -y custos-mcp. The env block is optional.' }),
+        el('pre', { text: MCP_GENERIC }),
+      ],
+    }),
+    el('section', {
+      class: 'panel',
+      attrs: { id: 'api' },
+      children: [
+        el('h2', { text: 'API' }),
+        el('p', { text: 'POST /check with chainId, from, to, data, and value. Unknown fields are rejected, including a key or a seed. GET /health returns { "ok": true }. GET /report/<address>?chainId= returns registry counts. chainId is 56, 97, or 8453. The report route defaults to 97. Base has no registry.' }),
+        el('h3', { text: 'curl' }),
+        el('pre', { text: CHECK_CURL }),
+        el('h3', { text: 'fetch' }),
+        el('pre', { text: CHECK_FETCH }),
       ],
     }),
   )
@@ -750,7 +832,7 @@ function owlCallout(): HTMLElement {
 function heroRail(): HTMLElement {
   const links: Array<[string, string, Array<[string, Record<string, string>]>]> = [
     ['/scanner', 'Run a free check', [['circle', { cx: '11', cy: '11', r: '5.5' }], ['path', { d: 'M15.5 15.5L20 20' }]]],
-    ['/#docs', 'Read the docs', [['path', { d: 'M6 5.5h8.5A3.5 3.5 0 0 1 18 9v9.5H8.2A2.2 2.2 0 0 0 6 20.7z' }], ['path', { d: 'M6 5.5v15.2' }]]],
+    ['/docs', 'Read the docs', [['path', { d: 'M6 5.5h8.5A3.5 3.5 0 0 1 18 9v9.5H8.2A2.2 2.2 0 0 0 6 20.7z' }], ['path', { d: 'M6 5.5v15.2' }]]],
     ['/report', 'File a report', [['path', { d: 'M7 4.5h8l2 2V19.5H7z' }], ['path', { d: 'M9.5 11h5M9.5 14.5h5' }]]],
   ]
   return el('nav', {
@@ -780,6 +862,73 @@ function icon(shapes: Array<[string, Record<string, string>]>): SVGSVGElement {
     svg.append(node)
   }
   return svg
+}
+
+function useCases(): HTMLElement {
+  const cards: Array<{ title: string; body: string; href: string; link: string; code?: string }> = [
+    {
+      title: 'Add the skill',
+      body: 'Put the Custos skill on your agent. Before it signs on BNB Chain, BSC testnet, or Base, it POSTs the transaction and follows the verdict.',
+      href: '/docs#skill',
+      link: 'Skill install',
+    },
+    {
+      title: 'Plug in the MCP server',
+      body: 'Connect custos-mcp from Claude, Cursor, or any MCP client. The agent calls custos_check instead of signing blind.',
+      href: '/docs#mcp',
+      link: 'MCP config',
+    },
+    {
+      title: 'Call the API',
+      body: 'POST /check yourself in the line before a signature. Send chain, sender, target, calldata, and value. Nothing else.',
+      href: '/docs#api',
+      link: 'curl and fetch',
+      code: CHECK_CARD,
+    },
+    {
+      title: 'Protect a .ai wallet',
+      body: 'Agent ID owners activate protection for that wallet. The first activate checks the .ai token. Custos never asks for a key.',
+      href: '/activate',
+      link: 'Activate',
+    },
+    {
+      title: 'Check it by hand',
+      body: 'Paste a transaction or a token in the scanner and read the verdict, the reasons, and the registry counts. Nothing is signed.',
+      href: '/scanner',
+      link: 'Open the scanner',
+    },
+    {
+      title: 'Stop a bad swap',
+      body: 'Trading and DeFi bots refuse honeypots and malicious approvals. Danger blocks even when the check is incomplete. Warn, or an incomplete check that is not danger, stops for the owner.',
+      href: '/docs#verdicts',
+      link: 'Verdict rules',
+    },
+  ]
+  return el('section', {
+    attrs: { id: 'use-cases', 'aria-labelledby': 'use-cases-title' },
+    children: [
+      el('div', {
+        class: 'section-head',
+        children: [
+          el('h2', { attrs: { id: 'use-cases-title' }, text: 'Use cases' }),
+          el('p', { text: 'Same check, six ways in. The agent, the MCP client, a direct call, an Agent ID wallet, the scanner, or a bot.' }),
+          networksStrip(),
+        ],
+      }),
+      el('div', {
+        class: 'use-grid',
+        children: cards.map((card) => el('article', {
+          class: 'panel use-card',
+          children: [
+            el('h3', { text: card.title }),
+            el('p', { text: card.body }),
+            ...(card.code ? [el('pre', { text: card.code })] : []),
+            routeLink(card.href, card.link, 'button ghost'),
+          ],
+        })),
+      }),
+    ],
+  })
 }
 
 function verdictCard(tone: string, title: string, body: string): HTMLElement {

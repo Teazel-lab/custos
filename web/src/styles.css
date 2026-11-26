@@ -537,7 +537,27 @@ p { margin: 0.35rem 0; }
 .verdict-danger { border-top-color: var(--danger); }
 .verdict h2 { text-transform: capitalize; }
 
-#how, #docs { scroll-margin-top: 5.5rem; }
+#how, #docs, #use-cases, #verdicts, #skill, #mcp, #api { scroll-margin-top: 5.5rem; }
+
+.section-head { max-width: 40rem; margin: 1.4rem 0 0.2rem; }
+.section-head h2 { margin-bottom: 0.35rem; }
+
+.use-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin: 0.9rem 0 1rem;
+}
+
+.use-card h3, .panel h3 {
+  margin: 0.95rem 0 0.35rem;
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+}
+
+.use-card h3 { margin-top: 0; }
+.use-card p { color: #fff0ec; }
+.use-card .button { margin-top: 0.75rem; }
 
 .row, .stack { display: flex; gap: 0.75rem; }
 .row { flex-wrap: wrap; align-items: center; }
@@ -654,7 +674,7 @@ footer {
   .hero-card { background: linear-gradient(180deg, rgba(72, 12, 22, 0.66), rgba(28, 5, 12, 0.52)); }
   .stage-media img { object-position: right center; }
   .feature-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .grid-3, .split { grid-template-columns: minmax(0, 1fr); }
+  .grid-3, .split, .use-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 767px) {

@@ -4,7 +4,8 @@ Static site for [custosprotocol.com](https://custosprotocol.com). It talks to th
 
 Pages:
 
-- `/` — hero, how a check works, a curl example, contract links
+- `/` — hero, how a check works, use cases, a curl example, contract links
+- `/docs` — skill install, MCP config, curl and fetch, verdict rules
 - `/activate` — Agents: connect an injected wallet, read Agent ID, read `isProtected`, call `CustosHub.activate`
 - `/scanner` — Check: `POST /check` and `GET /report/<address>`
 - `/report` — Agent ID holders call `CustosRegistry.report`

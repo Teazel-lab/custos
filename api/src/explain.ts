@@ -1,7 +1,16 @@
-import { WALLET_SENTENCE } from './messages'
+import { INCOMPLETE_NOTE, WALLET_SENTENCE } from './messages'
 import type { AppEnv, Reason, Verdict } from './types'
 
-export { WALLET_SENTENCE }
+export { INCOMPLETE_NOTE, WALLET_SENTENCE }
+
+/** Says the check is incomplete only when `complete` is false. */
+export function stateCompleteness(complete: boolean, explanation: string): string {
+  if (complete || explanation.includes(INCOMPLETE_NOTE)) return explanation
+  if (explanation.includes(WALLET_SENTENCE)) {
+    return explanation.replace(WALLET_SENTENCE, `${INCOMPLETE_NOTE} ${WALLET_SENTENCE}`)
+  }
+  return `${explanation} ${INCOMPLETE_NOTE}`
+}
 
 export function templateExplanation(verdict: Verdict, reasons: Reason[]): string {
   const findings =

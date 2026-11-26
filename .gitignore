@@ -18,3 +18,7 @@ api/.dev.vars
 web/node_modules/
 web/dist/
 web/.wrangler/
+
+# MCP server
+mcp/node_modules/
+mcp/dist/
