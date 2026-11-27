@@ -84,6 +84,7 @@ export function renderLanding(root: HTMLElement): () => void {
                 el('div', { class: 'hero-actions', children: [primary, secondary] }),
                 featureRow(),
                 networksStrip(),
+                comingSoonStrip(),
               ],
             }),
           ],
@@ -789,6 +790,55 @@ function networksStrip(): HTMLElement {
       chainName(8453, 'Base'),
     ],
   })
+}
+
+type MarkShape = [string, Record<string, string>]
+
+/** Planned networks, shown as marks only. Not live: no chain ids, no API support. */
+const COMING_SOON: Array<[string, MarkShape[]]> = [
+  ['Ethereum', [
+    ['path', { d: 'M12 2 5.6 12.3 12 16l6.4-3.7L12 2Z' }],
+    ['path', { d: 'M5.6 13.7 12 22l6.4-8.3L12 17.4l-6.4-3.7Z', opacity: '0.7' }],
+  ]],
+  ['Arbitrum', [
+    ['path', { d: 'M12 2.6 20.2 7.3v9.4L12 21.4l-8.2-4.7V7.3L12 2.6Z', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.7', 'stroke-linejoin': 'round' }],
+    ['path', { d: 'M8.4 16.4 12 7.6l3.6 8.8', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.7', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }],
+  ]],
+  ['Solana', [
+    ['path', { d: 'M7 4.5h13l-3 3.2H4l3-3.2Z' }],
+    ['path', { d: 'M4 10.4h13l3 3.2H7l-3-3.2Z' }],
+    ['path', { d: 'M7 16.3h13l-3 3.2H4l3-3.2Z' }],
+  ]],
+  ['Monad', [
+    ['path', { d: 'M12 3c-2.6 0-9 6.4-9 9s6.4 9 9 9 9-6.4 9-9-6.4-9-9-9Zm0 4.6c1.3 0 4.4 3.1 4.4 4.4s-3.1 4.4-4.4 4.4-4.4-3.1-4.4-4.4 3.1-4.4 4.4-4.4Z', 'fill-rule': 'evenodd' }],
+  ]],
+]
+
+function comingSoonStrip(): HTMLElement {
+  return el('div', {
+    class: 'networks networks-soon',
+    children: [
+      el('span', { class: 'networks-label', text: 'Coming soon' }),
+      ...COMING_SOON.map(([name, shapes]) => el('span', {
+        class: 'soon-mark',
+        attrs: { role: 'img', 'aria-label': `${name} (coming soon)`, title: `${name} (coming soon)` },
+        children: [chainMark(shapes)],
+      })),
+    ],
+  })
+}
+
+function chainMark(shapes: MarkShape[]): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  svg.setAttribute('viewBox', '0 0 24 24')
+  svg.setAttribute('aria-hidden', 'true')
+  svg.setAttribute('fill', 'currentColor')
+  for (const [tag, attrs] of shapes) {
+    const node = document.createElementNS('http://www.w3.org/2000/svg', tag)
+    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value)
+    svg.append(node)
+  }
+  return svg
 }
 
 function chainName(chainId: ChainId, label = CHAINS[chainId].name): HTMLElement {
