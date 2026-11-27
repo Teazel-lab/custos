@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { applyAddressPaste, buildCheckRequest, EXAMPLE_SENDER, parseCheckResponse, parseReportResponse, reportUrl, severityClass } from '../src/api'
 import { validateReportTarget } from '../src/chain'
 import { API_BASE, CHAINS, contractsReady } from '../src/config'
-import { CHECK_CURL, CHECK_FETCH, MCP_CURSOR, VERDICT_RULES } from '../src/snippets'
+import { CHECK_CURL, CHECK_FETCH, MCP_CURSOR, MCP_REMOTE_URL, VERDICT_RULES } from '../src/snippets'
 import { shouldAddChain, transactionCall } from '../src/wallet'
 
 describe('addresses', () => {
@@ -132,6 +132,10 @@ describe('site copy and chain marks', () => {
     expect(CHECK_CURL).toContain('"chainId":97')
     expect(MCP_CURSOR).toContain('npx')
     expect(MCP_CURSOR).toContain('["-y", "custosprotocol-mcp"]')
+    expect(MCP_REMOTE_URL).toBe(`${API_BASE}/mcp`)
+    expect(pages).toContain('Add to ChatGPT / Claude')
+    expect(pages).toContain('developer mode')
+    expect(pages).toContain('Add custom connector')
     expect(VERDICT_RULES.map((rule) => rule.id)).toEqual(['block', 'warn', 'allow'])
     expect(VERDICT_RULES[0].text).toContain('Danger blocks even when complete is false.')
     expect(pages).toContain('Danger blocks even when complete is false.')

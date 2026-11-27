@@ -5,17 +5,19 @@ import { withCors } from './cors'
 import { HttpError, json, readLimitedBody } from './http'
 import { WALLET_SENTENCE } from './messages'
 import { allowRequest } from './ratelimit'
+import { handleMcp } from './mcp'
 import { reportFor } from './registry'
 import type { AppEnv, ChainId } from './types'
 
 export async function handle(request: Request, env: AppEnv): Promise<Response> {
   const allowDev = env.ALLOW_DEV_ORIGINS === '1'
+  const mcp = new URL(request.url).pathname === '/mcp'
   try {
-    return withCors(request, await route(request, env), allowDev)
+    return withCors(request, await route(request, env), allowDev, mcp)
   } catch (err) {
-    if (err instanceof HttpError) return withCors(request, json({ error: err.message }, err.status), allowDev)
+    if (err instanceof HttpError) return withCors(request, json({ error: err.message }, err.status), allowDev, mcp)
     console.error(JSON.stringify({ error: 'unhandled' }))
-    return withCors(request, json({ error: 'Check failed.' }, 500), allowDev)
+    return withCors(request, json({ error: 'Check failed.' }, 500), allowDev, mcp)
   }
 }
 
@@ -31,6 +33,7 @@ async function route(request: Request, env: AppEnv): Promise<Response> {
   if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true })
   if (url.pathname.startsWith('/report/')) return report(request, env, url)
   if (request.method === 'POST' && url.pathname === '/check') return check(request, env)
+  if (url.pathname === '/mcp') return handleMcp(request, env)
   return json({ error: 'Not found.' }, 404)
 }
 
