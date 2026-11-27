@@ -537,7 +537,7 @@ p { margin: 0.35rem 0; }
 .verdict-danger { border-top-color: var(--danger); }
 .verdict h2 { text-transform: capitalize; }
 
-#how, #docs, #use-cases, #verdicts, #skill, #mcp, #api { scroll-margin-top: 5.5rem; }
+#how, #docs, #use-cases, #verdicts, #skill, #connectors, #mcp, #api { scroll-margin-top: 5.5rem; }
 
 .section-head { max-width: 40rem; margin: 1.4rem 0 0.2rem; }
 .section-head h2 { margin-bottom: 0.35rem; }

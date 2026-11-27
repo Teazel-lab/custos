@@ -116,7 +116,7 @@ The script prints `{ action, verdict, complete, reasons, providers }`. Exit `0` 
 
 ## MCP
 
-The same check is published as the npm package `custosprotocol-mcp`. Start it with `npx -y custosprotocol-mcp`. The tools are `custos_check` and `custos_report`.
+The same check is published as the npm package `custosprotocol-mcp`. Start it with `npx -y custosprotocol-mcp`. ChatGPT and Claude can also add the hosted connector at `https://api.custosprotocol.com/mcp`. The tools are `custos_check` and `custos_report`.
 
 ## Registry lookup
 

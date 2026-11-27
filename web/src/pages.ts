@@ -31,6 +31,8 @@ import {
   MCP_CLAUDE_DESKTOP,
   MCP_CURSOR,
   MCP_GENERIC,
+  MCP_INIT_CURL,
+  MCP_REMOTE_URL,
   SKILL_INSTALL,
   VERDICT_RULES,
 } from './snippets'
@@ -164,7 +166,7 @@ export function renderDocs(root: HTMLElement): () => void {
         el('p', { class: 'eyebrow-line', children: [el('span', { text: 'Copy and use' })] }),
         el('h1', { text: 'Docs' }),
         el('p', {
-          text: 'Add the skill, connect the MCP server, or call the API yourself. Every path reviews the transaction before a signature. Custos never asks for a key and never signs.',
+          text: 'Add the skill, paste the hosted connector URL, run the stdio server, or call the API yourself. Every path reviews the transaction before a signature. Custos never asks for a key and never signs.',
         }),
         networksStrip(),
       ],
@@ -196,10 +198,25 @@ export function renderDocs(root: HTMLElement): () => void {
     }),
     el('section', {
       class: 'panel',
+      attrs: { id: 'connectors' },
+      children: [
+        el('h2', { text: 'Add to ChatGPT / Claude' }),
+        el('p', { text: 'ChatGPT and Claude can add Custos by URL. The connector is public and read-only. It does not ask for a key, and it does not sign. Tools are custos_check and custos_report.' }),
+        el('pre', { text: MCP_REMOTE_URL }),
+        el('h3', { text: 'ChatGPT' }),
+        el('p', { text: 'Settings, then Apps & Connectors, then Advanced settings. Turn on developer mode, then Create a connector and paste the URL.' }),
+        el('h3', { text: 'Claude' }),
+        el('p', { text: 'Settings, then Connectors, then Add custom connector, and paste the URL. On Team and Enterprise plans, an owner adds custom connectors in Admin settings. The Free plan allows one custom connector.' }),
+        el('h3', { text: 'curl' }),
+        el('pre', { text: MCP_INIT_CURL }),
+      ],
+    }),
+    el('section', {
+      class: 'panel',
       attrs: { id: 'mcp' },
       children: [
         el('h2', { text: 'MCP server' }),
-        el('p', { text: 'custosprotocol-mcp is a stdio server. Tools are custos_check and custos_report. The default API is the production check endpoint. Set CUSTOS_API_URL only when you want a different base. npx custosprotocol-mcp starts it. Do not send a key or a seed.' }),
+        el('p', { text: 'custosprotocol-mcp is a stdio server for desktop clients. The same tools are hosted at the connector URL above. npx custosprotocol-mcp starts the local server. Do not send a key or a seed.' }),
         el('h3', { text: 'Claude Desktop' }),
         el('p', { class: 'muted', text: 'claude_desktop_config.json. macOS: ~/Library/Application Support/Claude/. Linux: ~/.config/Claude/.' }),
         el('pre', { text: MCP_CLAUDE_DESKTOP }),
@@ -874,7 +891,7 @@ function useCases(): HTMLElement {
     },
     {
       title: 'Plug in the MCP server',
-      body: 'Connect custosprotocol-mcp from Claude, Cursor, or any MCP client. The agent calls custos_check instead of signing blind.',
+      body: 'Paste the hosted connector URL into ChatGPT or Claude, or run custosprotocol-mcp for Cursor and any local MCP client. The agent calls custos_check instead of signing blind.',
       href: '/docs#mcp',
       link: 'MCP config',
     },

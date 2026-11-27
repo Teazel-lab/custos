@@ -243,6 +243,11 @@ curl -s http://localhost:8787/report/0x0000000000000000000000000000000000000002?
 curl -s -X POST http://localhost:8787/check \
   -H 'content-type: application/json' \
   -d '{"chainId":97,"from":"0x0000000000000000000000000000000000000001","to":"0x0000000000000000000000000000000000000002","data":"0x","value":"0"}'
+
+curl -s -X POST http://localhost:8787/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
 Set `RPC_URL_56` and `RPC_URL_97` separately. A mainnet Alchemy URL will not answer chain 97 reads, and the worker will not send a chain 97 check to it.
@@ -257,4 +262,9 @@ Set `RPC_URL_56` and `RPC_URL_97` separately. A mainnet Alchemy URL will not ans
 
 ## MCP
 
-`mcp/` is the `custosprotocol-mcp` stdio server. Tools are `custos_check` and `custos_report`. `CUSTOS_API_URL` defaults to `https://api.custosprotocol.com`. Config snippets for Claude Desktop, Claude Code, Cursor, and other MCP clients are in `mcp/README.md`. The package is published on npm as `custosprotocol-mcp` (https://www.npmjs.com/package/custosprotocol-mcp).
+`mcp/` is the `custosprotocol-mcp` stdio server. Tools are `custos_check` and `custos_report`. `CUSTOS_API_URL` defaults to `https://api.custosprotocol.com`. The same tools are hosted at `https://api.custosprotocol.com/mcp` for ChatGPT, Claude, and any MCP client that accepts a URL. The hosted server reports itself as `custos-hosted` and is versioned separately from the npm package. It is keyless and read-only, and only `tools/call` counts against its rate limit.
+
+- ChatGPT: Settings → Apps & Connectors → Advanced settings → turn on Developer mode, then Create a connector and paste the URL.
+- Claude: Settings → Connectors → Add custom connector, and paste the URL. On Team and Enterprise plans, an owner adds custom connectors in Admin settings. The Free plan allows one custom connector.
+
+Config snippets for Claude Desktop, Claude Code, Cursor, and other MCP clients are in `mcp/README.md`. The package is published on npm as `custosprotocol-mcp` (https://www.npmjs.com/package/custosprotocol-mcp).

@@ -1,4 +1,5 @@
 import { addressAt, isAddress, MAX_UINT, selectorOf } from './abi'
+import { cacheGet, cachePut } from './cache'
 import { decodeCalldata, type DecodedCall } from './calldata'
 import { explain, stateCompleteness } from './explain'
 import { HttpError } from './http'
@@ -213,6 +214,53 @@ export function parseTx(body: unknown): Tx {
   const data = dataField(record.data)
   const value = valueField(record.value)
   return { chainId: record.chainId, from, to, data, value }
+}
+
+const CHECK_TTL = 60
+
+export interface CachedCheck {
+  result: CheckResponse
+  /** The JSON body, as stored in or read from the cache. */
+  encoded: string
+  hit: boolean
+}
+
+/**
+ * runCheck behind the 60s request-hash cache that /check and /mcp share.
+ * A provider miss must not sit in the cache, or the next identical request skips the retry.
+ */
+export async function cachedCheck(env: AppEnv, tx: Tx): Promise<CachedCheck> {
+  const cacheKey = `check:${await requestHash(tx)}`
+  const cached = await cacheGet(env.CACHE, cacheKey)
+  if (cached !== null) {
+    try {
+      return { result: JSON.parse(cached) as CheckResponse, encoded: cached, hit: true }
+    } catch {
+      // A corrupt entry is a miss.
+    }
+  }
+  const result = await runCheck(env, tx)
+  const encoded = JSON.stringify(result)
+  if (!result.reasons.some((reason) => reason.code === 'provider_failed')) {
+    await cachePut(env.CACHE, cacheKey, encoded, CHECK_TTL)
+  }
+  return { result, encoded, hit: false }
+}
+
+/** One log line per uncached check, so /check and /mcp traffic can be watched the same way. */
+export function logCheck(route: 'check' | 'mcp', plan: string, tx: Tx, result: CheckResponse): void {
+  console.log(
+    JSON.stringify({
+      route,
+      plan,
+      chainId: tx.chainId,
+      verdict: result.verdict,
+      score: result.score,
+      complete: result.complete,
+      mode: result.simulation.mode,
+      reasons: result.reasons.map((reason) => reason.code),
+    }),
+  )
 }
 
 export async function requestHash(tx: Tx): Promise<string> {
