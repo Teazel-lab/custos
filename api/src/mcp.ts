@@ -1,14 +1,17 @@
 import { secretField } from './auth'
-import { parseTx, runCheck } from './check'
+import { cachedCheck, logCheck, parseTx } from './check'
 import { HttpError, json, readLimitedBody } from './http'
 import { WALLET_SENTENCE } from './messages'
 import { allowRequest } from './ratelimit'
 import { reportFor } from './registry'
 import type { AppEnv, ChainId, CheckResponse } from './types'
 
-const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'] as const
-const PROTOCOL_VERSION = '2025-03-26'
-const SERVER_INFO = { name: 'custosprotocol-mcp', version: '1.0.0' }
+/** Newest first. An unknown version is answered with the newest, as the spec asks. */
+const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'] as const
+const PROTOCOL_VERSION = PROTOCOL_VERSIONS[0]
+/** The hosted connector, versioned on its own. The npm stdio package is custosprotocol-mcp. */
+const SERVER_INFO = { name: 'custos-hosted', title: 'Custos', version: '1.0.0' }
+const RATE_LIMITED = 'Rate limit exceeded. Wait a minute and call custos_check again. Do not sign until a check returns.'
 
 const CHECK_DESCRIPTION =
   'Check a transaction before it is signed on BNB Smart Chain (56), BSC testnet (97), or Base (8453). ' +
@@ -36,6 +39,50 @@ const READ_ONLY = {
 const ADDRESS = '^0x[0-9a-fA-F]{40}$'
 const HEX_DATA = '^0x(?:[0-9a-fA-F]{2})*$'
 const VALUE = '^(?:0x[0-9a-fA-F]+|\\d+)$'
+const CHAIN = { type: 'number', enum: [56, 97, 8453] }
+const STRING = { type: 'string' }
+
+const CHECK_OUTPUT = {
+  type: 'object',
+  properties: {
+    verdict: STRING,
+    complete: { type: 'boolean' },
+    reasons: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { code: STRING, severity: STRING, message: STRING },
+        required: ['code', 'severity', 'message'],
+      },
+    },
+    providers: {
+      type: 'object',
+      properties: { goplus: STRING, honeypot: STRING, scamSniffer: STRING, registry: STRING },
+      required: ['goplus', 'honeypot', 'scamSniffer', 'registry'],
+    },
+    explanation: STRING,
+  },
+  required: ['verdict', 'complete', 'reasons', 'providers', 'explanation'],
+  additionalProperties: false,
+}
+
+const REPORT_OUTPUT = {
+  type: 'object',
+  properties: {
+    address: STRING,
+    chainId: CHAIN,
+    configured: { type: 'boolean' },
+    reportCount: STRING,
+    reasons: {
+      type: 'object',
+      properties: { drainer: STRING, honeypot: STRING, phishing: STRING, mintOrRug: STRING, other: STRING },
+      required: ['drainer', 'honeypot', 'phishing', 'mintOrRug', 'other'],
+    },
+    message: STRING,
+  },
+  required: ['address', 'chainId', 'configured', 'reportCount', 'reasons'],
+  additionalProperties: false,
+}
 
 const TOOLS = [
   {
@@ -60,6 +107,7 @@ const TOOLS = [
       required: ['chainId', 'from', 'to', 'data', 'value'],
       additionalProperties: false,
     },
+    outputSchema: CHECK_OUTPUT,
     annotations: READ_ONLY,
   },
   {
@@ -75,6 +123,7 @@ const TOOLS = [
       required: ['address'],
       additionalProperties: false,
     },
+    outputSchema: REPORT_OUTPUT,
     annotations: READ_ONLY,
   },
 ]
@@ -86,7 +135,6 @@ export async function handleMcp(request: Request, env: AppEnv): Promise<Response
       headers: { allow: 'POST', 'content-type': 'application/json; charset=utf-8' },
     })
   }
-  if (!(await allowRequest(env.CHECK_LIMIT, request))) return json({ error: 'Rate limit exceeded.' }, 429)
   const protocol = request.headers.get('MCP-Protocol-Version')
   if (protocol && !supported(protocol)) {
     return json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Unsupported protocol version.' } }, 400)
@@ -101,18 +149,23 @@ export async function handleMcp(request: Request, env: AppEnv): Promise<Response
     const text = await readLimitedBody(request)
     body = text ? JSON.parse(text) : null
   } catch (err) {
-    if (err instanceof HttpError) return json({ error: err.message }, err.status)
+    if (err instanceof HttpError) return rpcError(null, -32600, err.message, err.status)
     return rpcError(null, -32700, 'Parse error.', 400)
   }
   if (Array.isArray(body)) return rpcError(null, -32600, 'Batching is not supported.', 400)
   if (!body || typeof body !== 'object') return rpcError(null, -32600, 'Invalid request.', 400)
   const message = body as Record<string, unknown>
-  if (message.jsonrpc !== '2.0' || typeof message.method !== 'string') return rpcError(idOf(message.id), -32600, 'Invalid request.')
+  if (message.jsonrpc !== '2.0') return rpcError(idOf(message.id), -32600, 'Invalid request.', 400)
+  // A JSON-RPC response from the client (no method) is accepted and ignored. This server sends no requests.
+  if (message.method === undefined && hasId(message.id) && ('result' in message || 'error' in message)) {
+    return new Response(null, { status: 202 })
+  }
+  if (typeof message.method !== 'string') return rpcError(idOf(message.id), -32600, 'Invalid request.', 400)
   if (message.method.startsWith('notifications/')) return new Response(null, { status: 202 })
-  if (!hasId(message.id)) return rpcError(null, -32600, 'Invalid request.')
+  if (!hasId(message.id)) return rpcError(null, -32600, 'Invalid request.', 400)
   const sse = wantsSse(request)
   try {
-    const result = await dispatch(env, message.method, message.params)
+    const result = await dispatch(request, env, message.method, message.params)
     return rpcResult(message.id, result, sse)
   } catch (err) {
     if (err instanceof RpcFailure) return rpcError(message.id, err.code, err.message, 200, sse)
@@ -121,11 +174,11 @@ export async function handleMcp(request: Request, env: AppEnv): Promise<Response
   }
 }
 
-async function dispatch(env: AppEnv, method: string, params: unknown): Promise<unknown> {
+async function dispatch(request: Request, env: AppEnv, method: string, params: unknown): Promise<unknown> {
   if (method === 'initialize') return initialize(params)
   if (method === 'ping') return {}
   if (method === 'tools/list') return { tools: TOOLS }
-  if (method === 'tools/call') return callTool(env, params)
+  if (method === 'tools/call') return callTool(request, env, params)
   throw new RpcFailure(-32601, 'Method not found.')
 }
 
@@ -145,7 +198,7 @@ function initialize(params: unknown): unknown {
   }
 }
 
-async function callTool(env: AppEnv, params: unknown): Promise<unknown> {
+async function callTool(request: Request, env: AppEnv, params: unknown): Promise<unknown> {
   const record = objectParams(params)
   const name = record.name
   if (name !== 'custos_check' && name !== 'custos_report') throw new RpcFailure(-32602, 'Unknown tool.')
@@ -154,6 +207,8 @@ async function callTool(env: AppEnv, params: unknown): Promise<unknown> {
   if (secretField(args)) {
     return toolError(`This API does not accept keys or seeds. ${WALLET_SENTENCE}`)
   }
+  // Only tools/call counts. initialize, tools/list, ping, and notifications are free.
+  if (!(await allowRequest(env.MCP_LIMIT ?? env.CHECK_LIMIT, request))) return toolError(RATE_LIMITED)
   try {
     const value = name === 'custos_check' ? await checkTool(env, args) : await reportTool(env, args)
     return {
@@ -162,14 +217,17 @@ async function callTool(env: AppEnv, params: unknown): Promise<unknown> {
     }
   } catch (err) {
     if (err instanceof RpcFailure) throw err
-    const message = err instanceof HttpError ? err.message : err instanceof Error ? err.message : 'Check failed.'
-    return toolError(message)
+    // Only HttpError text is written for callers. RPC, fetch, and upstream messages stay in the Worker.
+    if (err instanceof HttpError) return toolError(err.message)
+    console.error(JSON.stringify({ error: 'mcp_tool', tool: name }))
+    return toolError(name === 'custos_check' ? 'Check failed. Do not sign.' : 'Registry read failed.')
   }
 }
 
 async function checkTool(env: AppEnv, args: object): Promise<unknown> {
   const tx = parseTx(args)
-  const result = await runCheck(env, tx)
+  const { result, hit } = await cachedCheck(env, tx)
+  if (!hit) logCheck('mcp', 'free', tx, result)
   return checkView(result)
 }
 

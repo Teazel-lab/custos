@@ -13,6 +13,11 @@ export interface RateLimiter {
 export interface AppEnv {
   CACHE: KvStore
   CHECK_LIMIT: RateLimiter
+  /**
+   * Hosted MCP tools/call limit. ChatGPT and Claude call from shared server IPs, so this
+   * bucket is separate from CHECK_LIMIT and larger. Missing falls back to CHECK_LIMIT.
+   */
+  MCP_LIMIT?: RateLimiter
   LLM_BASE_URL: string
   LLM_MODEL: string
   /** Plain JSON-RPC for chain 56. Empty falls back to the public mainnet endpoint. */

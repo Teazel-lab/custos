@@ -35,6 +35,15 @@
         "limit": 60,
         "period": 60
       }
+    },
+    {
+      // Hosted /mcp counts tools/call only. ChatGPT and Claude share a few egress IPs.
+      "name": "MCP_LIMIT",
+      "namespace_id": "1002",
+      "simple": {
+        "limit": 600,
+        "period": 60
+      }
     }
   ]
 }

@@ -66,7 +66,7 @@ export const MCP_REMOTE_URL = `${API_BASE}/mcp`
 export const MCP_INIT_CURL = `curl -s -X POST ${API_BASE}/mcp \\
   -H 'content-type: application/json' \\
   -H 'accept: application/json, text/event-stream' \\
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'`
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'`
 
 export const MCP_GENERIC = `{
   "mcpServers": {

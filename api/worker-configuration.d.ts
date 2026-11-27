@@ -3,6 +3,7 @@
 interface __BaseEnv_Env {
 	CACHE: KVNamespace;
 	CHECK_LIMIT: RateLimit;
+	MCP_LIMIT: RateLimit;
 	LLM_BASE_URL: "https://api.openai.com/v1";
 	LLM_MODEL: "gpt-4o-mini";
 }

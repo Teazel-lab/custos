@@ -262,4 +262,9 @@ Set `RPC_URL_56` and `RPC_URL_97` separately. A mainnet Alchemy URL will not ans
 
 ## MCP
 
-`mcp/` is the `custosprotocol-mcp` stdio server. Tools are `custos_check` and `custos_report`. `CUSTOS_API_URL` defaults to `https://api.custosprotocol.com`. The same tools are hosted at `https://api.custosprotocol.com/mcp` for ChatGPT, Claude, and any MCP client that accepts a URL. Config snippets for Claude Desktop, Claude Code, Cursor, and other MCP clients are in `mcp/README.md`. The package is published on npm as `custosprotocol-mcp` (https://www.npmjs.com/package/custosprotocol-mcp).
+`mcp/` is the `custosprotocol-mcp` stdio server. Tools are `custos_check` and `custos_report`. `CUSTOS_API_URL` defaults to `https://api.custosprotocol.com`. The same tools are hosted at `https://api.custosprotocol.com/mcp` for ChatGPT, Claude, and any MCP client that accepts a URL. The hosted server reports itself as `custos-hosted` and is versioned separately from the npm package. It is keyless and read-only, and only `tools/call` counts against its rate limit.
+
+- ChatGPT: Settings → Apps & Connectors → Advanced settings → turn on Developer mode, then Create a connector and paste the URL.
+- Claude: Settings → Connectors → Add custom connector, and paste the URL. On Team and Enterprise plans, an owner adds custom connectors in Admin settings. The Free plan allows one custom connector.
+
+Config snippets for Claude Desktop, Claude Code, Cursor, and other MCP clients are in `mcp/README.md`. The package is published on npm as `custosprotocol-mcp` (https://www.npmjs.com/package/custosprotocol-mcp).

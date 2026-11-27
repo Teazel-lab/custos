@@ -1,6 +1,5 @@
 import { authorize, secretField } from './auth'
-import { cacheGet, cachePut } from './cache'
-import { parseTx, requestHash, runCheck } from './check'
+import { cachedCheck, logCheck, parseTx } from './check'
 import { withCors } from './cors'
 import { HttpError, json, readLimitedBody } from './http'
 import { WALLET_SENTENCE } from './messages'
@@ -56,28 +55,8 @@ async function check(request: Request, env: AppEnv): Promise<Response> {
     throw new HttpError(400, `This API does not accept keys or seeds. ${WALLET_SENTENCE}`)
   }
   const tx = parseTx(body)
-  const cacheKey = `check:${await requestHash(tx)}`
-  const cached = await cacheGet(env.CACHE, cacheKey)
-  if (cached !== null) {
-    return new Response(cached, { headers: { 'content-type': 'application/json; charset=utf-8' } })
-  }
-  const result = await runCheck(env, tx)
-  const encoded = JSON.stringify(result)
-  // A provider miss must not sit in the 60s check cache, or the next identical request skips the retry.
-  if (!result.reasons.some((reason) => reason.code === 'provider_failed')) {
-    await cachePut(env.CACHE, cacheKey, encoded, 60)
-  }
-  console.log(
-    JSON.stringify({
-      plan: access.plan,
-      chainId: tx.chainId,
-      verdict: result.verdict,
-      score: result.score,
-      complete: result.complete,
-      mode: result.simulation.mode,
-      reasons: result.reasons.map((reason) => reason.code),
-    }),
-  )
+  const { result, encoded, hit } = await cachedCheck(env, tx)
+  if (!hit) logCheck('check', access.plan, tx, result)
   return new Response(encoded, { headers: { 'content-type': 'application/json; charset=utf-8' } })
 }
 
