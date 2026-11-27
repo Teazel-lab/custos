@@ -156,6 +156,14 @@ describe('site copy and chain marks', () => {
     }
   })
 
+  it('shows planned chains as coming-soon marks without adding them to CHAINS', () => {
+    const pages = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'pages.ts'), 'utf8')
+    expect(pages).toContain("text: 'Coming soon'")
+    for (const name of ['Ethereum', 'Arbitrum', 'Solana', 'Monad']) expect(pages).toContain(`['${name}', [`)
+    expect(pages).toContain("'aria-label': `${name} (coming soon)`")
+    expect(Object.keys(CHAINS).map(Number).sort((a, b) => a - b)).toEqual([56, 97, 8453])
+  })
+
   it('keeps the official BNB yellow and Base blue marks unchanged', () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'assets')
     const bnb = readFileSync(join(root, 'bnb-chain.svg'), 'utf8')
